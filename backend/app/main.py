@@ -9,6 +9,7 @@ from app.api.v1 import tracking, calls, projects, numbers, callback, auth
 from app.core.config import settings
 from app.services.ami_client import ami_client
 from app.services.webhook import webhook_sender
+from app.services.pool_sync import sync_pool_from_db
 from app.workers.call_processor import process_call_event
 from app.workers.number_cleanup import run_cleanup_loop
 
@@ -26,6 +27,12 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "Failed to connect to Asterisk AMI — call tracking will not work until AMI is available"
         )
+
+    # Синхронизация пула номеров из БД в Redis
+    try:
+        await sync_pool_from_db()
+    except Exception:
+        logger.warning("Failed to sync number pool from DB — pool may be empty")
 
     # Запуск фонового worker для очистки просроченных сессий
     cleanup_task = asyncio.create_task(run_cleanup_loop())

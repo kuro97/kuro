@@ -1,4 +1,16 @@
 services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/snippet:/var/www/snippet:ro
+      - dashboard_build:/var/www/dashboard:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -47,3 +59,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  dashboard_build:
