@@ -1,14 +1,16 @@
-"""API для JS-скрипта: выдача подменных номеров и heartbeat."""
+"""API для JS-скрипта: выдача подменных номеров, heartbeat, resolve-did."""
 
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.redis import get_redis
 from app.models.project import Project
+from app.models.tracking_number import TrackingNumber
 from app.models.session import VisitorSession
 from app.schemas.tracking import (
     GetNumberRequest,
@@ -101,3 +103,55 @@ async def pool_stats(
     pool = NumberPoolManager(redis, str(project.id))
     stats = await pool.get_pool_stats()
     return PoolStats(**stats)
+
+
+# --- Resolve DID (вызывается AGI-скриптом из Asterisk) ---
+
+
+class ResolveDIDRequest(BaseModel):
+    did: str
+    caller: str
+
+
+class ResolveDIDResponse(BaseModel):
+    target_number: str
+    campaign_id: str
+    session_id: str
+    record_path: str
+
+
+@router.post("/resolve-did", response_model=ResolveDIDResponse)
+async def resolve_did(
+    body: ResolveDIDRequest,
+    db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
+):
+    """Определяет маршрут по подменному DID-номеру. Вызывается AGI-скриптом при входящем звонке."""
+    # Находим номер в БД
+    result = await db.execute(
+        select(TrackingNumber).where(TrackingNumber.phone == body.did, TrackingNumber.is_active)
+    )
+    tn = result.scalar_one_or_none()
+
+    if not tn or not tn.project_id:
+        return ResolveDIDResponse(
+            target_number="100",
+            campaign_id="",
+            session_id="",
+            record_path="/var/spool/asterisk/monitor",
+        )
+
+    # Получаем данные сессии из Redis
+    pool = NumberPoolManager(redis, str(tn.project_id))
+    session_data = await pool.get_session_by_number(body.did)
+
+    # Получаем проект для определения target
+    project_result = await db.execute(select(Project).where(Project.id == tn.project_id))
+    project = project_result.scalar_one_or_none()
+
+    return ResolveDIDResponse(
+        target_number=project.default_phone if project else "100",
+        campaign_id=session_data.get("utm_campaign", "") if session_data else "",
+        session_id=session_data.get("session_id", "") if session_data else "",
+        record_path="/var/spool/asterisk/monitor",
+    )
