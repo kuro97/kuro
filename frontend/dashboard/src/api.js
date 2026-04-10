@@ -47,6 +47,10 @@ export const api = {
   },
   getCallStats: (projectId, days = 30) =>
     request(`/calls/stats?project_id=${projectId}&days=${days}`),
+  getDailyChart: (projectId, days = 30) =>
+    request(`/calls/chart/daily?project_id=${projectId}&days=${days}`),
+  getSourcesChart: (projectId, days = 30) =>
+    request(`/calls/chart/sources?project_id=${projectId}&days=${days}`),
 
   // Numbers
   getNumbers: (projectId) => request(`/numbers/?project_id=${projectId}`),

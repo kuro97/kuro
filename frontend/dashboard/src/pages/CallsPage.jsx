@@ -66,12 +66,13 @@ export default function CallsPage() {
               <th>Campaign</th>
               <th>Duration</th>
               <th>Status</th>
+              <th>Recording</th>
             </tr>
           </thead>
           <tbody>
             {calls.length === 0 ? (
               <tr>
-                <td colSpan="7" style={{ textAlign: "center", color: "var(--text-dim)" }}>
+                <td colSpan="8" style={{ textAlign: "center", color: "var(--text-dim)" }}>
                   No calls yet
                 </td>
               </tr>
@@ -100,6 +101,15 @@ export default function CallsPage() {
                         ? "Busy"
                         : "Missed"}
                     </span>
+                  </td>
+                  <td>
+                    {c.recording_url ? (
+                      <audio controls preload="none" style={{ height: 28, maxWidth: 180 }}>
+                        <source src={c.recording_url} />
+                      </audio>
+                    ) : (
+                      <span style={{ color: "var(--text-dim)", fontSize: 12 }}>-</span>
+                    )}
                   </td>
                 </tr>
               ))
