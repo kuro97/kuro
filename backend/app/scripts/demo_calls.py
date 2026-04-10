@@ -136,6 +136,7 @@ async def generate_demo_calls(days: int = 30, calls_per_day: tuple = (15, 45)):
                     last_activity=call_time,
                 )
                 db.add(session)
+                await db.flush()
 
                 # Создаём звонок
                 call = Call(

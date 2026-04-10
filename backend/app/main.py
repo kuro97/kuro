@@ -22,8 +22,8 @@ async def lifespan(app: FastAPI):
     # Startup: подключение к Asterisk AMI
     ami_client.on_call_event(process_call_event)
     try:
-        await ami_client.connect()
-    except Exception:
+        await asyncio.wait_for(ami_client.connect(), timeout=5)
+    except (Exception, asyncio.TimeoutError):
         logger.warning(
             "Failed to connect to Asterisk AMI — call tracking will not work until AMI is available"
         )
