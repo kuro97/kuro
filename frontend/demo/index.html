@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Demo Site — KuroTrack Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f8fafc; color: #1e293b; }
+
+    .header {
+      background: #1e293b;
+      color: white;
+      padding: 20px 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h1 { font-size: 20px; }
+    .header .phone {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white;
+      padding: 80px 40px;
+      text-align: center;
+    }
+    .hero h2 { font-size: 36px; margin-bottom: 16px; }
+    .hero p { font-size: 18px; opacity: 0.9; margin-bottom: 32px; }
+    .hero .cta-phone {
+      font-size: 28px;
+      font-weight: 700;
+      background: white;
+      color: #6366f1;
+      padding: 16px 40px;
+      border-radius: 12px;
+      display: inline-block;
+      text-decoration: none;
+    }
+
+    .content { max-width: 800px; margin: 40px auto; padding: 0 20px; }
+    .content h3 { font-size: 20px; margin-bottom: 12px; }
+    .content p { line-height: 1.7; margin-bottom: 16px; color: #475569; }
+
+    .contact-section {
+      background: white;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin: 40px auto;
+      max-width: 800px;
+    }
+    .contact-section .phone-number {
+      font-size: 24px;
+      font-weight: 700;
+      color: #6366f1;
+    }
+
+    .footer {
+      background: #1e293b;
+      color: #94a3b8;
+      padding: 24px 40px;
+      text-align: center;
+      font-size: 14px;
+    }
+
+    .debug {
+      max-width: 800px;
+      margin: 20px auto;
+      padding: 20px;
+      background: #1e1e2e;
+      color: #a6e3a1;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .debug h4 { color: #cdd6f4; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+
+  <!-- Header с телефоном -->
+  <div class="header">
+    <h1>Demo Company</h1>
+    <a href="tel:+77001234567" class="phone kt-phone" style="color:white;text-decoration:none">
+      +7 (700) 123-45-67
+    </a>
+  </div>
+
+  <!-- Hero с CTA -->
+  <div class="hero">
+    <h2>Professional Services</h2>
+    <p>The best service in Almaty. Call us now!</p>
+    <a href="tel:+77001234567" class="cta-phone kt-phone">+7 (700) 123-45-67</a>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+    <h3>About Us</h3>
+    <p>This is a demo page to test KuroTrack Dynamic Number Insertion (DNI).
+       When the script loads, all phone numbers with class <code>kt-phone</code>
+       will be replaced with a tracking number from the pool.</p>
+    <p>Try opening this page with UTM parameters:
+       <br><code>?utm_source=google&utm_medium=cpc&utm_campaign=test</code></p>
+  </div>
+
+  <!-- Contact section -->
+  <div class="contact-section" style="max-width:800px;padding:0 20px">
+    <div class="contact-section">
+      <h3>Contact Us</h3>
+      <p>Call us: <span class="kt-phone phone-number">+7 (700) 123-45-67</span></p>
+      <p>Or leave your number and we'll call you back!</p>
+    </div>
+  </div>
+
+  <!-- Debug panel -->
+  <div class="debug">
+    <h4>KuroTrack Debug</h4>
+    <div id="debug-output">Loading...</div>
+  </div>
+
+  <div class="footer">
+    Demo Site for KuroTrack Call Tracking &mdash; Not a real company
+  </div>
+
+  <!-- KuroTrack DNI Script -->
+  <script src="/kurotrack.js"
+    data-api="/api/v1"
+    data-key="demo-api-key-for-testing"
+    data-selector=".kt-phone">
+  </script>
+
+  <!-- KuroTrack Callback Widget -->
+  <script src="/callback-widget.js"
+    data-api="/api/v1"
+    data-key="demo-api-key-for-testing"
+    data-position="right"
+    data-color="#6366f1">
+  </script>
+
+  <!-- Debug info -->
+  <script>
+    setTimeout(function() {
+      var info = [];
+      info.push("URL: " + window.location.href);
+      info.push("UTM Source: " + (new URLSearchParams(window.location.search).get("utm_source") || "none"));
+      info.push("UTM Medium: " + (new URLSearchParams(window.location.search).get("utm_medium") || "none"));
+      info.push("UTM Campaign: " + (new URLSearchParams(window.location.search).get("utm_campaign") || "none"));
+      info.push("Client ID: " + (localStorage.getItem("kt_client_id") || "not set"));
+      info.push("Assigned Phone: " + (sessionStorage.getItem("kt_phone") || "waiting..."));
+      info.push("Session ID: " + (sessionStorage.getItem("kt_session") || "waiting..."));
+      document.getElementById("debug-output").innerHTML = info.join("<br>");
+    }, 1500);
+  </script>
+
+</body>
+</html>

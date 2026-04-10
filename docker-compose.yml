@@ -6,6 +6,7 @@ services:
     volumes:
       - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./frontend/snippet:/var/www/snippet:ro
+      - ./frontend/demo:/var/www/demo:ro
       - dashboard_build:/var/www/dashboard:ro
     depends_on:
       - api
