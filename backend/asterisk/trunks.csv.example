@@ -1,0 +1,12 @@
+# Altel/Tele2 SIP trunks — credentials (DO NOT COMMIT TO GIT)
+# Формат: phone,password,sip_server
+# SIP серверы Altel:
+#   almpbx.tele2.kz  (Алматы)
+#   astpbx.tele2.kz  (Астана)
+phone,password,sip_server
+7004982680,CHANGE_ME,almpbx.tele2.kz
+7004982675,CHANGE_ME,almpbx.tele2.kz
+7004982670,CHANGE_ME,almpbx.tele2.kz
+7004982682,CHANGE_ME,almpbx.tele2.kz
+7004982687,CHANGE_ME,almpbx.tele2.kz
+7004982690,CHANGE_ME,almpbx.tele2.kz

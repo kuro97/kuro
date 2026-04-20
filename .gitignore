@@ -14,3 +14,7 @@ node_modules/
 recordings/
 *.wav
 *.mp3
+
+# SIP credentials — NEVER commit to git
+backend/asterisk/trunks.csv
+backend/asterisk/pjsip_custom.conf
