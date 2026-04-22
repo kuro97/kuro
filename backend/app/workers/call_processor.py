@@ -12,6 +12,7 @@ from app.core.redis import redis_client
 from app.models.call import Call
 from app.models.project import Project
 from app.models.tracking_number import TrackingNumber
+from app.services.amocrm import amocrm_client
 from app.services.analytics import analytics
 from app.services.call_quality import classify_call
 from app.services.recordings import recording_service
@@ -241,6 +242,19 @@ async def _handle_cdr(event: dict):
 
             db.add(call)
             await db.commit()
+
+            # AMO CRM: создаём лид для атрибуцированных входящих звонков
+            if call.project_id and call.disposition in ("ANSWERED", "NO ANSWER"):
+                try:
+                    lead_id = await amocrm_client.create_lead_from_call(call, src)
+                    if lead_id:
+                        call.amo_lead_id = lead_id
+                        await db.commit()
+                        await amocrm_client.add_call_note(lead_id, call)
+                except Exception:
+                    logger.exception(
+                        "AMO CRM push failed for call uniqueid=%s", event.get("UniqueID")
+                    )
 
             logger.info(
                 "CDR saved: %s -> %s (did=%s), %ss, %s, project=%s, source=%s, unique=%s, target=%s, spam=%s",

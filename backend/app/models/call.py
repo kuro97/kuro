@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, func
+from sqlalchemy import String, Integer, BigInteger, DateTime, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -49,6 +49,9 @@ class Call(Base):
     medium: Mapped[str | None] = mapped_column(String(255), nullable=True)
     campaign: Mapped[str | None] = mapped_column(String(255), nullable=True)
     keyword: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # AMO CRM — id лида, созданного после атрибуции звонка
+    amo_lead_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
     # Запись
     recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)

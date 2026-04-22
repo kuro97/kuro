@@ -26,5 +26,11 @@ class Settings(BaseSettings):
     heartbeat_interval: int = 30  # seconds
     heartbeat_timeout: int = 60  # seconds without heartbeat = release number
 
+    # AMO CRM (опционально — если пустые, интеграция отключена)
+    amo_subdomain: str = ""  # "qadam" → https://qadam.amocrm.ru
+    amo_token: str = ""  # long-lived access token
+    amo_pipeline_id: int | None = None
+    amo_responsible_user_id: int | None = None
+
 
 settings = Settings()
