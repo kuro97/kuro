@@ -47,6 +47,27 @@ class AmoCRMClient:
         if settings.amo_responsible_user_id is not None:
             lead_body["responsible_user_id"] = settings.amo_responsible_user_id
 
+        # Пишем UTM-метки в стандартные поля лида AMO.
+        # По ним в AMO работает фильтрация (Воронка → Фильтр → utm_source и т.д.).
+        lead_custom: list[dict] = []
+        if call.source:
+            lead_custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
+        if call.medium:
+            lead_custom.append({"field_code": "UTM_MEDIUM", "values": [{"value": call.medium}]})
+        if call.campaign:
+            lead_custom.append({"field_code": "UTM_CAMPAIGN", "values": [{"value": call.campaign}]})
+        if call.keyword:
+            lead_custom.append({"field_code": "UTM_TERM", "values": [{"value": call.keyword}]})
+        if call.tracking_did:
+            # DID кладём в UTM_CONTENT как "did:7004982670" — универсальный способ
+            # пометить на какой номер был звонок без создания своего поля.
+            lead_custom.append({
+                "field_code": "UTM_CONTENT",
+                "values": [{"value": f"did:{call.tracking_did}"}],
+            })
+        if lead_custom:
+            lead_body["custom_fields_values"] = lead_custom
+
         lead_body["_embedded"] = {
             "contacts": [
                 {
