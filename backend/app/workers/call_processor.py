@@ -6,6 +6,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app.core.database import async_session
 from app.core.phone import normalize_phone
 from app.core.redis import redis_client
@@ -217,12 +219,25 @@ async def _handle_cdr(event: dict):
                 project_id=uuid.UUID(project_id) if project_id else None,
             )
 
-            # 5. Атрибуция из сессии
+            # 5. Атрибуция из сессии (DNI) — приоритет
             if session_data:
                 call.source = session_data.get("source")
                 call.medium = session_data.get("utm_medium")
                 call.campaign = session_data.get("utm_campaign")
                 call.keyword = session_data.get("utm_keyword")
+            else:
+                # Фолбэк: если DNI-сессии нет (статичный номер или snippet не отработал),
+                # берём source_label из самого tracking_number. Так звонки на
+                # "2gis_almaty", "instagram" и т.п. номера сразу видны в дашборде.
+                if did_norm:
+                    tn_row = await db.execute(
+                        select(TrackingNumber).where(
+                            TrackingNumber.phone_normalized == did_norm
+                        )
+                    )
+                    tn_obj = tn_row.scalar_one_or_none()
+                    if tn_obj and tn_obj.source_label:
+                        call.source = tn_obj.source_label
 
             # 6. Запись звонка — проверяем локальный файл
             try:
