@@ -36,6 +36,8 @@ class HeartbeatResponse(BaseModel):
 
 class CallOut(BaseModel):
     id: uuid.UUID
+    # project_id=None означает неатрибуцированный звонок (номер не найден в пуле)
+    project_id: uuid.UUID | None = None
     caller_number: str
     tracking_did: str
     target_number: str | None

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import tracking, calls, projects, numbers, callback, auth
+from app.api.v1 import tracking, calls, projects, numbers, callback, auth, health as health_router
 from app.core.config import settings
 from app.services.ami_client import ami_client
 from app.services.webhook import webhook_sender
@@ -19,14 +19,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: подключение к Asterisk AMI
+    # Startup: регистрируем обработчик событий и запускаем reconnect-цикл AMI
     ami_client.on_call_event(process_call_event)
-    try:
-        await asyncio.wait_for(ami_client.connect(), timeout=5)
-    except (Exception, asyncio.TimeoutError):
-        logger.warning(
-            "Failed to connect to Asterisk AMI — call tracking will not work until AMI is available"
-        )
+    # start() не блокирует — спавнит фоновую задачу с reconnect-loop
+    await ami_client.start()
 
     # Синхронизация пула номеров из БД в Redis
     try:
@@ -39,7 +35,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # Shutdown: останавливаем reconnect-цикл и закрываем соединения
     cleanup_task.cancel()
     await ami_client.disconnect()
     await webhook_sender.close()
@@ -66,8 +62,5 @@ app.include_router(calls.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
 app.include_router(numbers.router, prefix="/api/v1")
 app.include_router(callback.router, prefix="/api/v1")
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "kurotrack"}
+# Health endpoint вынесен в отдельный роутер для чистоты
+app.include_router(health_router.router, prefix="/api/v1")

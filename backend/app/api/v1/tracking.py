@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.phone import normalize_phone
 from app.core.redis import get_redis
 from app.models.project import Project
 from app.models.tracking_number import TrackingNumber
@@ -127,9 +128,14 @@ async def resolve_did(
     redis=Depends(get_redis),
 ):
     """Определяет маршрут по подменному DID-номеру. Вызывается AGI-скриптом при входящем звонке."""
-    # Находим номер в БД
+    # Нормализуем DID и ищем по phone_normalized, чтобы матч работал независимо от формата
+    # ('+77004982670' и '7004982670' — один и тот же номер)
+    normalized_did = normalize_phone(body.did)
     result = await db.execute(
-        select(TrackingNumber).where(TrackingNumber.phone == body.did, TrackingNumber.is_active)
+        select(TrackingNumber).where(
+            TrackingNumber.phone_normalized == normalized_did,
+            TrackingNumber.is_active,
+        )
     )
     tn = result.scalar_one_or_none()
 

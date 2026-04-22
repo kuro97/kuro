@@ -15,6 +15,10 @@ class TrackingNumber(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     phone: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    # Нормализованный номер: только последние 10 цифр (без +, пробелов, скобок).
+    # Используется для матчинга с DID из AMI CDR, который приходит без плюса.
+    # Пример: phone='+77004982670' -> phone_normalized='7004982670'
+    phone_normalized: Mapped[str] = mapped_column(String(15), unique=True, index=True, nullable=False)
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True
     )

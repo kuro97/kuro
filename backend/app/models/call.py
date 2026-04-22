@@ -14,7 +14,11 @@ class Call(Base):
     __tablename__ = "calls"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    # project_id разрешает NULL: звонок сохраняется даже если атрибуция провалилась
+    # (номер не найден в tracking_numbers). Это предотвращает silent data loss при IntegrityError.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True
+    )
     session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("visitor_sessions.id"), nullable=True
     )
@@ -51,4 +55,5 @@ class Call(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    project: Mapped["Project"] = relationship(back_populates="calls")
+    # lazy="selectin" гарантирует что при project_id=None relationship вернёт None без ошибки
+    project: Mapped["Project | None"] = relationship(back_populates="calls", lazy="selectin")

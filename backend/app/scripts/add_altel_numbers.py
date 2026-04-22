@@ -12,6 +12,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.core.database import async_session
+from app.core.phone import normalize_phone
 from app.core.redis import redis_client
 from app.models.project import Project
 from app.models.tracking_number import TrackingNumber
@@ -91,6 +92,7 @@ async def main():
                 tn = TrackingNumber(
                     id=uuid.uuid4(),
                     phone=formatted,
+                    phone_normalized=normalize_phone(formatted),
                     project_id=project.id,
                     number_type="dynamic",
                 )
@@ -108,6 +110,7 @@ async def main():
                 tn = TrackingNumber(
                     id=uuid.uuid4(),
                     phone=formatted,
+                    phone_normalized=normalize_phone(formatted),
                     project_id=project.id,
                     number_type="static",
                     source_label=label,

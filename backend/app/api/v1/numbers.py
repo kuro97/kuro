@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.phone import normalize_phone
 from app.core.redis import get_redis
 from app.models.tracking_number import TrackingNumber
 from app.services.number_pool import NumberPoolManager
@@ -52,14 +53,21 @@ async def add_number(
     redis=Depends(get_redis),
 ):
     """Добавить номер в систему и в Redis-пул."""
+    # Нормализуем номер для поиска дубликата и хранения
+    normalized = normalize_phone(body.phone)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Phone must contain digits")
+
+    # Проверяем дубликат по нормализованному номеру — не зависит от формата ввода
     existing = await db.execute(
-        select(TrackingNumber).where(TrackingNumber.phone == body.phone)
+        select(TrackingNumber).where(TrackingNumber.phone_normalized == normalized)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Number already exists")
 
     number = TrackingNumber(
         phone=body.phone,
+        phone_normalized=normalized,
         project_id=uuid.UUID(body.project_id),
         number_type=body.number_type,
         source_label=body.source_label,
@@ -89,8 +97,14 @@ async def bulk_add_numbers(
     pool = NumberPoolManager(redis, body.project_id)
 
     for phone in body.phones:
+        # Нормализуем каждый номер для проверки дубликата
+        normalized = normalize_phone(phone)
+        if not normalized:
+            skipped += 1
+            continue
+
         existing = await db.execute(
-            select(TrackingNumber).where(TrackingNumber.phone == phone)
+            select(TrackingNumber).where(TrackingNumber.phone_normalized == normalized)
         )
         if existing.scalar_one_or_none():
             skipped += 1
@@ -98,6 +112,7 @@ async def bulk_add_numbers(
 
         number = TrackingNumber(
             phone=phone,
+            phone_normalized=normalized,
             project_id=uuid.UUID(body.project_id),
             number_type="dynamic",
         )

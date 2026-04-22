@@ -42,6 +42,26 @@ async def list_calls(
     return result.scalars().all()
 
 
+@router.get("/unattributed", response_model=list[CallOut])
+async def list_unattributed(
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """Звонки без атрибуции (project_id IS NULL) — для оператора, чтобы вручную разобрать."""
+    since = datetime.utcnow() - timedelta(days=days)
+    query = (
+        select(Call)
+        .where(Call.project_id.is_(None), Call.started_at >= since)
+        .order_by(Call.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 @router.get("/stats", response_model=CallStats)
 async def call_stats(
     project_id: str = Query(...),
