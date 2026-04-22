@@ -102,8 +102,31 @@ async def _handle_cdr(event: dict):
     dst = event.get("dst")
     src = event.get("src")
 
-    # DID = user_field (dialplan) или dst (fallback)
-    did_raw = user_field or dst
+    # DID читается в порядке приоритета:
+    # 1. Redis inbound_did:{uniqueid} — захвачен из Newchannel (from-trunk, DID из SIP INVITE)
+    # 2. Redis inbound_did:{linkedid} — если uniqueid не совпал (bridged channel)
+    # 3. user_field — Set(CDR(userfield)=...) из dialplan (fallback, на будущее)
+    # 4. dst — последняя надежда (extension менеджера, обычно не DID)
+    linkedid = event.get("linkedid")
+    redis_did: str | None = None
+    try:
+        redis_did = (
+            await redis_client.get(f"inbound_did:{uniqueid}")
+            or (await redis_client.get(f"inbound_did:{linkedid}") if linkedid else None)
+        )
+    except Exception:
+        logger.exception("Ошибка чтения inbound_did из Redis: uniqueid=%s", uniqueid)
+
+    did_raw = redis_did or user_field or dst
+
+    # Чистим Redis-ключи сразу после чтения, чтобы не засорять
+    if redis_did and uniqueid:
+        try:
+            await redis_client.delete(f"inbound_did:{uniqueid}")
+            if linkedid:
+                await redis_client.delete(f"inbound_did:{linkedid}")
+        except Exception:
+            logger.exception("Ошибка удаления inbound_did из Redis: uniqueid=%s", uniqueid)
 
     if not did_raw:
         logger.warning(

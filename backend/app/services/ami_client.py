@@ -9,6 +9,8 @@ import logging
 from panoramisk import Manager
 
 from app.core.config import settings
+from app.core.phone import normalize_phone
+from app.core.redis import redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +105,55 @@ class AMIClient:
             return False
 
     async def _handle_newchannel(self, manager, message):
-        """Новый канал — начало звонка."""
+        """Новый канал — начало звонка.
+
+        Если канал пришёл из транка (from-trunk/from-pstn или Channel начинается
+        с SIP/trunk_/PJSIP/trunk_/Local/trunk_), захватываем DID из Exten и
+        сохраняем в Redis с TTL 300 сек. Это нужно потому что входящие Inbound
+        Routes идут напрямую в Queue, минуя kurotrack-inbound, поэтому
+        CDR(userfield) не заполняется dialplan-ом.
+        """
+        context = message.get("Context", "")
+        channel = message.get("Channel", "")
+        uniqueid = message.get("Uniqueid", "")
+        linkedid = message.get("Linkedid", "")
+        exten = message.get("Exten", "")
+
+        # Определяем входящий транковый звонок по контексту или имени канала
+        is_inbound_trunk = (
+            context in ("from-trunk", "from-pstn")
+            or channel.startswith("SIP/trunk_")
+            or channel.startswith("PJSIP/trunk_")
+            or channel.startswith("Local/trunk_")
+        )
+
+        if is_inbound_trunk and exten and not exten.startswith(("s", "h", "i")):
+            # Нормализуем DID (убираем код страны, оставляем 10 цифр)
+            did_norm = normalize_phone(exten)
+            if did_norm:
+                try:
+                    # Сохраняем DID по uniqueid и linkedid (TTL 5 минут)
+                    await redis_client.set(f"inbound_did:{uniqueid}", did_norm, ex=300)
+                    if linkedid and linkedid != uniqueid:
+                        await redis_client.set(f"inbound_did:{linkedid}", did_norm, ex=300)
+                    logger.debug(
+                        "inbound DID captured: uniqueid=%s linkedid=%s did=%s",
+                        uniqueid, linkedid, did_norm,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Ошибка сохранения inbound DID в Redis: uniqueid=%s did=%s",
+                        uniqueid, did_norm,
+                    )
+
         event_data = {
             "event": "new_call",
-            "uniqueid": message.get("Uniqueid"),
-            "channel": message.get("Channel"),
+            "uniqueid": uniqueid,
+            "channel": channel,
             "caller_id_num": message.get("CallerIDNum"),
             "caller_id_name": message.get("CallerIDName"),
-            "exten": message.get("Exten"),
-            "context": message.get("Context"),
+            "exten": exten,
+            "context": context,
         }
         for handler in self._call_handlers:
             try:
@@ -141,6 +183,8 @@ class AMIClient:
         event_data = {
             "event": "cdr",
             "uniqueid": message.get("UniqueID"),
+            # linkedid нужен для корреляции с Redis-ключом inbound_did:{linkedid}
+            "linkedid": message.get("LinkedID"),
             "src": message.get("Source"),
             "dst": message.get("Destination"),
             "dcontext": message.get("DestinationContext"),
