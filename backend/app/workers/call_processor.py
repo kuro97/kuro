@@ -243,8 +243,9 @@ async def _handle_cdr(event: dict):
             db.add(call)
             await db.commit()
 
-            # AMO CRM: создаём лид для атрибуцированных входящих звонков
-            if call.project_id and call.disposition in ("ANSWERED", "NO ANSWER"):
+            # AMO CRM: создаём лид для любого атрибуцированного входящего звонка.
+            # FAILED/BUSY тоже — это потенциальные лиды, клиент пытался связаться.
+            if call.project_id:
                 try:
                     lead_id = await amocrm_client.create_lead_from_call(call, src)
                     if lead_id:
