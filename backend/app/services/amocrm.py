@@ -54,7 +54,7 @@ class AmoCRMClient:
                     "custom_fields_values": [
                         {
                             "field_code": "PHONE",
-                            "values": [{"value": caller}],
+                            "values": [{"value": caller, "enum_code": "MOB"}],
                         }
                     ],
                 }
@@ -63,14 +63,17 @@ class AmoCRMClient:
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
+                # /leads/complex создаёт лид вместе с новым контактом в одном запросе.
+                # Обычный /leads требует ссылку на существующий contact id.
                 response = await client.post(
-                    f"{self._base_url()}/api/v4/leads",
+                    f"{self._base_url()}/api/v4/leads/complex",
                     json=[lead_body],
                     headers=self._headers(),
                 )
                 response.raise_for_status()
                 data = response.json()
-                lead_id: int = data["_embedded"]["leads"][0]["id"]
+                # /leads/complex возвращает массив: [{"id": N, "contact_id": M, ...}]
+                lead_id: int = data[0]["id"]
                 logger.info(
                     "AMO CRM: создан лид id=%s для caller=%s uniqueid=%s",
                     lead_id, caller, call.uniqueid,
