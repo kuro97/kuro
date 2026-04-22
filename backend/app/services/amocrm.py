@@ -49,7 +49,10 @@ class AmoCRMClient:
 
         # Пишем UTM-метки в стандартные поля лида AMO.
         # По ним в AMO работает фильтрация (Воронка → Фильтр → utm_source и т.д.).
-        lead_custom: list[dict] = []
+        lead_custom: list[dict] = [
+            # Единый маркер всех лидов от KuroTrack — по нему фильтр "все звонки".
+            {"field_code": "UTM_REFERRER", "values": [{"value": "kurotrack"}]},
+        ]
         if call.source:
             lead_custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
         if call.medium:
