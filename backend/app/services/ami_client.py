@@ -7,12 +7,36 @@ import asyncio
 import logging
 
 from panoramisk import Manager
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.database import async_session
 from app.core.phone import normalize_phone
 from app.core.redis import redis_client
+from app.models.tracking_number import TrackingNumber
 
 logger = logging.getLogger(__name__)
+
+# Кеш наших DID (нормализованные phone_normalized). Заполняется при старте
+# и при каждом успешном reconnect. Используется в _handle_newchannel для
+# опознания "наш это входящий или нет" независимо от имени Channel/Context.
+_our_dids: set[str] = set()
+
+
+async def _reload_our_dids() -> None:
+    """Перечитывает список активных DID из БД в кеш."""
+    global _our_dids
+    try:
+        async with async_session() as db:
+            rows = await db.execute(
+                select(TrackingNumber.phone_normalized).where(
+                    TrackingNumber.is_active.is_(True)
+                )
+            )
+            _our_dids = {r[0] for r in rows.all() if r[0]}
+        logger.info("Loaded %s our DIDs for inbound detection: %s", len(_our_dids), _our_dids)
+    except Exception:
+        logger.exception("Не удалось загрузить наши DID из БД")
 
 
 class AMIClient:
@@ -74,6 +98,10 @@ class AMIClient:
                 backoff = 2  # сбрасываем backoff после успешного подключения
                 logger.info("Подключено к Asterisk AMI")
 
+                # Перечитываем список наших DID — это кеш для _handle_newchannel.
+                # На каждом reconnect синхронизируемся на случай если номера добавили.
+                await _reload_our_dids()
+
                 # Ждём разрыва: проверяем состояние транспорта каждые 5 секунд
                 while not self._stop and self.is_connected:
                     await asyncio.sleep(5)
@@ -119,7 +147,15 @@ class AMIClient:
         linkedid = message.get("Linkedid", "")
         exten = message.get("Exten", "")
 
-        # Определяем входящий транковый звонок по контексту или имени канала
+        # Главный сигнал: Exten совпадает с одним из наших tracking-номеров.
+        # Это работает независимо от имени Channel/Context — FreePBX может
+        # называть транки по-разному (SIP/trunk_X, PJSIP/X, или вообще без
+        # префикса trunk_), но Exten в первых Newchannel всегда равен DID.
+        did_norm = normalize_phone(exten) if exten and not exten.startswith(("s", "h", "i")) else ""
+        is_our_did = bool(did_norm and did_norm in _our_dids)
+
+        # Старый эвристический триггер оставляем как fallback — вдруг наш DID
+        # ещё не в кеше (добавили после старта), но канал явно из транка.
         is_inbound_trunk = (
             context in ("from-trunk", "from-pstn")
             or channel.startswith("SIP/trunk_")
@@ -127,24 +163,21 @@ class AMIClient:
             or channel.startswith("Local/trunk_")
         )
 
-        if is_inbound_trunk and exten and not exten.startswith(("s", "h", "i")):
-            # Нормализуем DID (убираем код страны, оставляем 10 цифр)
-            did_norm = normalize_phone(exten)
-            if did_norm:
-                try:
-                    # Сохраняем DID по uniqueid и linkedid (TTL 5 минут)
-                    await redis_client.set(f"inbound_did:{uniqueid}", did_norm, ex=300)
-                    if linkedid and linkedid != uniqueid:
-                        await redis_client.set(f"inbound_did:{linkedid}", did_norm, ex=300)
-                    logger.debug(
-                        "inbound DID captured: uniqueid=%s linkedid=%s did=%s",
-                        uniqueid, linkedid, did_norm,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Ошибка сохранения inbound DID в Redis: uniqueid=%s did=%s",
-                        uniqueid, did_norm,
-                    )
+        if (is_our_did or is_inbound_trunk) and did_norm:
+            try:
+                # Сохраняем DID по uniqueid и linkedid (TTL 5 минут)
+                await redis_client.set(f"inbound_did:{uniqueid}", did_norm, ex=300)
+                if linkedid and linkedid != uniqueid:
+                    await redis_client.set(f"inbound_did:{linkedid}", did_norm, ex=300)
+                logger.info(
+                    "inbound DID captured: uniqueid=%s linkedid=%s did=%s channel=%s",
+                    uniqueid, linkedid, did_norm, channel,
+                )
+            except Exception:
+                logger.exception(
+                    "Ошибка сохранения inbound DID в Redis: uniqueid=%s did=%s",
+                    uniqueid, did_norm,
+                )
 
         event_data = {
             "event": "new_call",
