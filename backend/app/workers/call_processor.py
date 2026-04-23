@@ -204,6 +204,9 @@ async def _handle_cdr(event: dict):
             call = Call(
                 id=uuid.uuid4(),
                 uniqueid=uniqueid or str(uuid.uuid4()),
+                # linkedid сохраняется для reconciliation: по нему worker ищет
+                # другой call-leg того же звонка с правильным tracking_did
+                linkedid=linkedid or None,
                 caller_number=src,
                 # Сохраняем исходный DID для дебага; нормализованный — в tracking_did
                 tracking_did=did_norm,

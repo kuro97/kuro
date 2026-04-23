@@ -25,6 +25,9 @@ class Call(Base):
 
     # Asterisk CDR
     uniqueid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # linkedid — связывает все leg-каналы одного звонка (A-leg, B-leg, очередь).
+    # Используется reconciliation worker для поиска корреляций между call-leg.
+    linkedid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     caller_number: Mapped[str] = mapped_column(String(20), index=True)
     tracking_did: Mapped[str] = mapped_column(String(20), index=True)
     target_number: Mapped[str | None] = mapped_column(String(20), nullable=True)

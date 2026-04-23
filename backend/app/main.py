@@ -12,6 +12,7 @@ from app.services.webhook import webhook_sender
 from app.services.pool_sync import sync_pool_from_db
 from app.workers.call_processor import process_call_event
 from app.workers.number_cleanup import run_cleanup_loop
+from app.workers.reconciliation import run_reconciliation_loop
 
 logging.basicConfig(level=logging.INFO if not settings.debug else logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -33,10 +34,14 @@ async def lifespan(app: FastAPI):
     # Запуск фонового worker для очистки просроченных сессий
     cleanup_task = asyncio.create_task(run_cleanup_loop())
 
+    # Запуск reconciliation worker: восстанавливает атрибуцию потерянных звонков
+    reconciliation_task = asyncio.create_task(run_reconciliation_loop())
+
     yield
 
     # Shutdown: останавливаем reconnect-цикл и закрываем соединения
     cleanup_task.cancel()
+    reconciliation_task.cancel()
     await ami_client.disconnect()
     await webhook_sender.close()
 
