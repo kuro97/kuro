@@ -61,10 +61,20 @@ async def get_tracking_number(
             session_id=body.client_id,
         )
 
+    # Находим tracking_number_id по выданному номеру, чтобы связать сессию.
+    # Без этой связки атрибуция входящего звонка не найдёт UTM.
+    tn_row = await db.execute(
+        select(TrackingNumber).where(
+            TrackingNumber.phone_normalized == normalize_phone(number)
+        )
+    )
+    tn = tn_row.scalar_one_or_none()
+
     # Сохраняем сессию в PostgreSQL
     session = VisitorSession(
         id=uuid.uuid4(),
         project_id=project.id,
+        tracking_number_id=tn.id if tn else None,
         client_id=body.client_id,
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
