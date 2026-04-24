@@ -47,27 +47,40 @@ class AmoCRMClient:
         if settings.amo_responsible_user_id is not None:
             lead_body["responsible_user_id"] = settings.amo_responsible_user_id
 
-        # Пишем UTM-метки в стандартные поля лида AMO.
-        # По ним в AMO работает фильтрация (Воронка → Фильтр → utm_source и т.д.).
+        # Пишем UTM-метки в ДВА места одновременно:
+        # 1. tracking_data поля (по field_code) — для внутренней статистики и
+        #    фильтров воронки AMO (Воронка → Фильтр → utm_source).
+        # 2. text-поля (по field_id) — для отображения непосредственно на
+        #    карточке лида. tracking_data на карточке AMO не показывает.
+        #
+        # ID text-полей у AMO аккаунта qadam (получены через GET /api/v4/leads/custom_fields):
+        #   869441 = UTM_SOURCE
+        #   869443 = UTM_MEDIUM
+        #   869445 = UTM_CAMPAIGN
+        #   869447 = UTM_CONTENT
+        #   869449 = UTM_TERM
         lead_custom: list[dict] = [
-            # Единый маркер всех лидов от KuroTrack — по нему фильтр "все звонки".
+            # Единый маркер всех лидов от KuroTrack — фильтр "все звонки".
             {"field_code": "UTM_REFERRER", "values": [{"value": "kurotrack"}]},
         ]
         if call.source:
             lead_custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
+            lead_custom.append({"field_id": 869441, "values": [{"value": call.source}]})
         if call.medium:
             lead_custom.append({"field_code": "UTM_MEDIUM", "values": [{"value": call.medium}]})
+            lead_custom.append({"field_id": 869443, "values": [{"value": call.medium}]})
         if call.campaign:
             lead_custom.append({"field_code": "UTM_CAMPAIGN", "values": [{"value": call.campaign}]})
+            lead_custom.append({"field_id": 869445, "values": [{"value": call.campaign}]})
         if call.keyword:
             lead_custom.append({"field_code": "UTM_TERM", "values": [{"value": call.keyword}]})
+            lead_custom.append({"field_id": 869449, "values": [{"value": call.keyword}]})
         if call.tracking_did:
             # DID кладём в UTM_CONTENT как "did:7004982670" — универсальный способ
             # пометить на какой номер был звонок без создания своего поля.
-            lead_custom.append({
-                "field_code": "UTM_CONTENT",
-                "values": [{"value": f"did:{call.tracking_did}"}],
-            })
+            did_value = f"did:{call.tracking_did}"
+            lead_custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
+            lead_custom.append({"field_id": 869447, "values": [{"value": did_value}]})
         if lead_custom:
             lead_body["custom_fields_values"] = lead_custom
 
