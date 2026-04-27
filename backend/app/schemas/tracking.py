@@ -52,6 +52,7 @@ class CallOut(BaseModel):
     medium: str | None
     campaign: str | None
     keyword: str | None
+    amo_city: str | None = None
     recording_url: str | None
 
     model_config = {"from_attributes": True}

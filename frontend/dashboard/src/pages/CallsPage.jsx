@@ -15,6 +15,14 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Обрезает длинное UTM-значение до 20 символов с многоточием
+const UTM_MAX = 20;
+function truncateUtm(val) {
+  if (!val) return "-";
+  if (val.length > UTM_MAX) return val.slice(0, UTM_MAX) + "…";
+  return val;
+}
+
 // Возвращает строку даты в формате YYYY-MM-DD для input type="date"
 function toDateInputValue(date) {
   const y = date.getFullYear();
@@ -46,6 +54,7 @@ function toISOEnd(dateStr) {
 
 export default function CallsPage() {
   const [calls, setCalls] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = localStorage.getItem("kt_project");
 
@@ -57,6 +66,28 @@ export default function CallsPage() {
     date_to: searchParams.get("date_to") || defaultDateTo(),
   });
 
+  // Выполняет запрос звонков с текущим фильтром
+  function fetchCalls(currentFilter) {
+    if (!projectId) return;
+    setLoading(true);
+
+    const apiParams = {};
+    if (currentFilter.source) apiParams.source = currentFilter.source;
+    if (currentFilter.disposition) apiParams.disposition = currentFilter.disposition;
+    if (currentFilter.date_from) apiParams.date_from = toISOStart(currentFilter.date_from);
+    if (currentFilter.date_to) apiParams.date_to = toISOEnd(currentFilter.date_to);
+
+    api.getCalls(projectId, apiParams)
+      .then(setCalls)
+      .catch(() => setCalls([]))
+      .finally(() => setLoading(false));
+  }
+
+  // Обработчик кнопки «Обновить» — перезапрашивает данные с теми же параметрами
+  function handleRefresh() {
+    fetchCalls(filter);
+  }
+
   // При изменении фильтра — обновляем URL и перезапрашиваем данные
   useEffect(() => {
     // Синхронизируем query string с текущим состоянием фильтра
@@ -67,16 +98,7 @@ export default function CallsPage() {
     if (filter.date_to) params.date_to = filter.date_to;
     setSearchParams(params, { replace: true });
 
-    if (!projectId) return;
-
-    // Формируем параметры для API
-    const apiParams = {};
-    if (filter.source) apiParams.source = filter.source;
-    if (filter.disposition) apiParams.disposition = filter.disposition;
-    if (filter.date_from) apiParams.date_from = toISOStart(filter.date_from);
-    if (filter.date_to) apiParams.date_to = toISOEnd(filter.date_to);
-
-    api.getCalls(projectId, apiParams).then(setCalls).catch(() => setCalls([]));
+    fetchCalls(filter);
   }, [projectId, filter]);
 
   return (
@@ -124,6 +146,16 @@ export default function CallsPage() {
             <option value="BUSY">Busy</option>
           </select>
         </div>
+        {/* Кнопка ручного обновления списка звонков */}
+        <div className="form-group" style={{ alignSelf: "flex-end" }}>
+          <button
+            onClick={handleRefresh}
+            disabled={loading}
+            style={{ padding: "6px 16px", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}
+          >
+            {loading ? "Загрузка..." : "Обновить"}
+          </button>
+        </div>
       </div>
 
       <div className="table-wrap">
@@ -134,7 +166,10 @@ export default function CallsPage() {
               <th>Caller</th>
               <th>Tracking #</th>
               <th>Source</th>
+              <th>Medium</th>
               <th>Campaign</th>
+              <th>Keyword</th>
+              <th>City</th>
               <th>Duration</th>
               <th>Status</th>
               <th>Recording</th>
@@ -143,7 +178,7 @@ export default function CallsPage() {
           <tbody>
             {calls.length === 0 ? (
               <tr>
-                <td colSpan="8" style={{ textAlign: "center", color: "var(--text-dim)" }}>
+                <td colSpan="11" style={{ textAlign: "center", color: "var(--text-dim)" }}>
                   Нет звонков за выбранный период
                 </td>
               </tr>
@@ -153,8 +188,11 @@ export default function CallsPage() {
                   <td>{formatDate(c.started_at)}</td>
                   <td>{c.caller_number}</td>
                   <td>{c.tracking_did}</td>
-                  <td>{c.source || "direct"}</td>
-                  <td>{c.campaign || "-"}</td>
+                  <td title={c.source || undefined}>{truncateUtm(c.source) === "-" ? "direct" : truncateUtm(c.source)}</td>
+                  <td title={c.medium || undefined}>{truncateUtm(c.medium)}</td>
+                  <td title={c.campaign || undefined}>{truncateUtm(c.campaign)}</td>
+                  <td title={c.keyword || undefined}>{truncateUtm(c.keyword)}</td>
+                  <td>{c.amo_city || "-"}</td>
                   <td>{formatDuration(c.billsec)}</td>
                   <td>
                     <span
