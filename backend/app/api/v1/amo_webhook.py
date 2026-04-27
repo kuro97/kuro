@@ -8,11 +8,16 @@ AMO шлёт POST при изменении/добавлении лида (appli
 
 import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 
 from app.core.config import settings
 from app.services.amo_sync import amo_sync
+
+# Только верхнеуровневый id из leads[update|status|add|delete][N][id].
+# Не путать с вложенными [field_id], [pipeline_id], [user_id] и т.п.
+_LEAD_ID_KEY_RE = re.compile(r"^leads\[(?:update|status|add|delete)\]\[\d+\]\[id\]$")
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +50,9 @@ async def amo_webhook(request: Request):
     lead_ids: set[int] = set()
 
     for key, value in form.multi_items():
-        # Ловим leads[update][N][id], leads[status][N][id], leads[add][N][id]
-        if key.startswith("leads[") and "[id]" in key:
+        # Точный матч ТОЛЬКО на верхнеуровневый id сделки.
+        # Игнорируем [field_id], [pipeline_id], [user_id] и прочие вложенные id.
+        if _LEAD_ID_KEY_RE.match(key):
             try:
                 lead_ids.add(int(value))
             except (ValueError, TypeError):
