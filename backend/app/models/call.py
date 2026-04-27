@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, BigInteger, DateTime, ForeignKey, Text, func
+from sqlalchemy import String, Integer, BigInteger, Boolean, DateTime, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -55,6 +55,15 @@ class Call(Base):
 
     # AMO CRM — id лида, созданного после атрибуции звонка
     amo_lead_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+
+    # AMO CRM — данные о лиде, обновляются webhook'ом при изменении статуса сделки
+    amo_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    amo_pipeline_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    amo_status_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    amo_qualified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    amo_won: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    amo_deal_amount: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    amo_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Запись
     recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
