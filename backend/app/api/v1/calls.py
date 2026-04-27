@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, date
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func, cast, Date, text
+from sqlalchemy import select, func, cast, Date, text, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -96,9 +96,10 @@ async def call_stats(
     paid_pct = round(paid * 100 / total, 1) if total else 0.0
 
     # --- По источникам (NULL → "direct") ---
+    # GROUP BY по raw Call.source, замена NULL выполняется в Python
     src_q = (
         select(
-            func.coalesce(Call.source, "direct").label("source"),
+            Call.source.label("source"),
             func.count().label("total"),
             func.count().filter(Call.disposition == "ANSWERED").label("answered"),
             func.count().filter(Call.amo_qualified == True).label("qualified"),
@@ -108,13 +109,13 @@ async def call_stats(
             ).label("revenue"),
         )
         .where(*base_conditions)
-        .group_by(func.coalesce(Call.source, "direct"))
+        .group_by(Call.source)
         .order_by(func.count().desc())
     )
     src_rows = (await db.execute(src_q)).all()
     by_source = [
         SourceStats(
-            source=r.source,
+            source=r.source if r.source is not None else "direct",
             total=r.total,
             answered=r.answered,
             qualified=r.qualified,
@@ -125,9 +126,10 @@ async def call_stats(
     ]
 
     # --- По городам (NULL → "Не указан") ---
+    # GROUP BY по raw Call.amo_city, замена NULL выполняется в Python
     city_q = (
         select(
-            func.coalesce(Call.amo_city, "Не указан").label("city"),
+            Call.amo_city.label("city"),
             func.count().label("total"),
             func.count().filter(Call.amo_qualified == True).label("qualified"),
             func.count().filter(Call.amo_won == True).label("paid"),
@@ -136,13 +138,13 @@ async def call_stats(
             ).label("revenue"),
         )
         .where(*base_conditions)
-        .group_by(func.coalesce(Call.amo_city, "Не указан"))
+        .group_by(Call.amo_city)
         .order_by(func.count().desc())
     )
     city_rows = (await db.execute(city_q)).all()
     by_city = [
         CityStats(
-            city=r.city,
+            city=r.city if r.city is not None else "Не указан",
             total=r.total,
             qualified=r.qualified,
             paid=r.paid,
