@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import tracking, calls, projects, numbers, callback, auth, health as health_router
+from app.api.v1 import amo_webhook
 from app.core.config import settings
 from app.services.ami_client import ami_client
 from app.services.webhook import webhook_sender
@@ -13,6 +14,7 @@ from app.services.pool_sync import sync_pool_from_db
 from app.workers.call_processor import process_call_event
 from app.workers.number_cleanup import run_cleanup_loop
 from app.workers.reconciliation import run_reconciliation_loop
+from app.workers.amo_poll import run_amo_poll_loop
 
 logging.basicConfig(level=logging.INFO if not settings.debug else logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -37,11 +39,15 @@ async def lifespan(app: FastAPI):
     # Запуск reconciliation worker: восстанавливает атрибуцию потерянных звонков
     reconciliation_task = asyncio.create_task(run_reconciliation_loop())
 
+    # Запуск AMO poll worker: страховочная синхронизация лидов каждые 10 минут
+    amo_poll_task = asyncio.create_task(run_amo_poll_loop())
+
     yield
 
     # Shutdown: останавливаем reconnect-цикл и закрываем соединения
     cleanup_task.cancel()
     reconciliation_task.cancel()
+    amo_poll_task.cancel()
     await ami_client.disconnect()
     await webhook_sender.close()
 
@@ -67,5 +73,7 @@ app.include_router(calls.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
 app.include_router(numbers.router, prefix="/api/v1")
 app.include_router(callback.router, prefix="/api/v1")
+# AMO CRM webhook — real-time обновление данных лида
+app.include_router(amo_webhook.router, prefix="/api/v1")
 # Health endpoint вынесен в отдельный роутер для чистоты
 app.include_router(health_router.router, prefix="/api/v1")

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     amo_token: str = ""  # long-lived access token
     amo_pipeline_id: int | None = None
     amo_responsible_user_id: int | None = None
+    # Секрет для защиты webhook-эндпоинта. Пустой = защита выключена (для теста).
+    # В проде задать в .env.worker: KURO_AMO_WEBHOOK_SECRET=<случайная строка>
+    amo_webhook_secret: str = ""
 
 
 settings = Settings()
