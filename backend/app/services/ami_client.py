@@ -215,9 +215,14 @@ class AMIClient:
         """
         event_data = {
             "event": "cdr",
-            "uniqueid": message.get("UniqueID"),
-            # linkedid нужен для корреляции с Redis-ключом inbound_did:{linkedid}
-            "linkedid": message.get("LinkedID"),
+            "uniqueid": message.get("UniqueID") or message.get("Uniqueid"),
+            # linkedid нужен и для Redis-корреляции, и для дедупликации legs.
+            # panoramisk отдаёт ключ в нескольких регистрах — пробуем все варианты.
+            "linkedid": (
+                message.get("LinkedID")
+                or message.get("Linkedid")
+                or message.get("linkedid")
+            ),
             "src": message.get("Source"),
             "dst": message.get("Destination"),
             "dcontext": message.get("DestinationContext"),
