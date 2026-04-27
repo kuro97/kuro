@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 
 function formatDate(iso) {
@@ -14,18 +15,68 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Возвращает строку даты в формате YYYY-MM-DD для input type="date"
+function toDateInputValue(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// Последние 7 дней: date_to = сегодня, date_from = сегодня - 7 дней
+function defaultDateFrom() {
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  return toDateInputValue(d);
+}
+
+function defaultDateTo() {
+  return toDateInputValue(new Date());
+}
+
+// Конвертирует YYYY-MM-DD в ISO timestamp начала дня (00:00:00)
+function toISOStart(dateStr) {
+  return `${dateStr}T00:00:00`;
+}
+
+// Конвертирует YYYY-MM-DD в ISO timestamp конца дня (23:59:59)
+function toISOEnd(dateStr) {
+  return `${dateStr}T23:59:59`;
+}
+
 export default function CallsPage() {
   const [calls, setCalls] = useState([]);
-  const [filter, setFilter] = useState({ source: "", disposition: "" });
+  const [searchParams, setSearchParams] = useSearchParams();
   const projectId = localStorage.getItem("kt_project");
 
+  // Читаем фильтры из URL, если их нет — ставим дефолтные значения
+  const [filter, setFilter] = useState({
+    source: searchParams.get("source") || "",
+    disposition: searchParams.get("disposition") || "",
+    date_from: searchParams.get("date_from") || defaultDateFrom(),
+    date_to: searchParams.get("date_to") || defaultDateTo(),
+  });
+
+  // При изменении фильтра — обновляем URL и перезапрашиваем данные
   useEffect(() => {
-    if (projectId) {
-      const params = {};
-      if (filter.source) params.source = filter.source;
-      if (filter.disposition) params.disposition = filter.disposition;
-      api.getCalls(projectId, params).then(setCalls);
-    }
+    // Синхронизируем query string с текущим состоянием фильтра
+    const params = {};
+    if (filter.source) params.source = filter.source;
+    if (filter.disposition) params.disposition = filter.disposition;
+    if (filter.date_from) params.date_from = filter.date_from;
+    if (filter.date_to) params.date_to = filter.date_to;
+    setSearchParams(params, { replace: true });
+
+    if (!projectId) return;
+
+    // Формируем параметры для API
+    const apiParams = {};
+    if (filter.source) apiParams.source = filter.source;
+    if (filter.disposition) apiParams.disposition = filter.disposition;
+    if (filter.date_from) apiParams.date_from = toISOStart(filter.date_from);
+    if (filter.date_to) apiParams.date_to = toISOEnd(filter.date_to);
+
+    api.getCalls(projectId, apiParams).then(setCalls).catch(() => setCalls([]));
   }, [projectId, filter]);
 
   return (
@@ -33,6 +84,26 @@ export default function CallsPage() {
       <h1>Calls</h1>
 
       <div className="form-row" style={{ marginBottom: 16 }}>
+        {/* Фильтр по дате: От */}
+        <div className="form-group">
+          <label>От</label>
+          <input
+            type="date"
+            value={filter.date_from}
+            max={filter.date_to}
+            onChange={(e) => setFilter({ ...filter, date_from: e.target.value })}
+          />
+        </div>
+        {/* Фильтр по дате: До */}
+        <div className="form-group">
+          <label>До</label>
+          <input
+            type="date"
+            value={filter.date_to}
+            min={filter.date_from}
+            onChange={(e) => setFilter({ ...filter, date_to: e.target.value })}
+          />
+        </div>
         <div className="form-group">
           <label>Source</label>
           <input
@@ -73,7 +144,7 @@ export default function CallsPage() {
             {calls.length === 0 ? (
               <tr>
                 <td colSpan="8" style={{ textAlign: "center", color: "var(--text-dim)" }}>
-                  No calls yet
+                  Нет звонков за выбранный период
                 </td>
               </tr>
             ) : (
