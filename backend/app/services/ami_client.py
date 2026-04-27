@@ -179,6 +179,19 @@ class AMIClient:
                     uniqueid, did_norm,
                 )
 
+        # Сохраняем map uniqueid → linkedid для ВСЕХ Newchannel событий (не только trunk).
+        # Asterisk в Event: Cdr не передаёт Linkedid (баг конкретной версии),
+        # поэтому в _handle_cdr будем читать его из этого Redis-ключа.
+        # TTL 1 час — звонок дольше длиться обычно не может.
+        if uniqueid and linkedid:
+            try:
+                await redis_client.set(f"linkedid_for:{uniqueid}", linkedid, ex=3600)
+            except Exception:
+                logger.exception(
+                    "Ошибка сохранения linkedid_for в Redis: uniqueid=%s linkedid=%s",
+                    uniqueid, linkedid,
+                )
+
         event_data = {
             "event": "new_call",
             "uniqueid": uniqueid,
@@ -213,16 +226,23 @@ class AMIClient:
         """CDR — полная запись о звонке после завершения.
         Добавляем user_field из AMI-поля UserField (пробрасывает DID из dialplan).
         """
+        uniqueid = message.get("UniqueID") or message.get("Uniqueid")
+        # На текущей версии FreePBX/Asterisk linkedid не приходит в Event: Cdr.
+        # Читаем из Redis-кеша который заполняется в _handle_newchannel.
+        linkedid = (
+            message.get("LinkedID")
+            or message.get("Linkedid")
+            or message.get("linkedid")
+        )
+        if not linkedid and uniqueid:
+            try:
+                linkedid = await redis_client.get(f"linkedid_for:{uniqueid}")
+            except Exception:
+                logger.exception("Ошибка чтения linkedid_for из Redis: uniqueid=%s", uniqueid)
         event_data = {
             "event": "cdr",
-            "uniqueid": message.get("UniqueID") or message.get("Uniqueid"),
-            # linkedid нужен и для Redis-корреляции, и для дедупликации legs.
-            # panoramisk отдаёт ключ в нескольких регистрах — пробуем все варианты.
-            "linkedid": (
-                message.get("LinkedID")
-                or message.get("Linkedid")
-                or message.get("linkedid")
-            ),
+            "uniqueid": uniqueid,
+            "linkedid": linkedid,
             "src": message.get("Source"),
             "dst": message.get("Destination"),
             "dcontext": message.get("DestinationContext"),
