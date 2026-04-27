@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
+import { SourceIcon } from "../components/SourceIcon";
 
 function formatDate(iso) {
   if (!iso) return "-";
@@ -189,28 +190,23 @@ export default function CallsPage() {
                   <td>{formatDate(c.started_at)}</td>
                   <td>{c.caller_number}</td>
                   <td>{c.tracking_did}</td>
-                  <td title={c.source || undefined}>{truncateUtm(c.source) === "-" ? "direct" : truncateUtm(c.source)}</td>
+                  <td><SourceIcon source={c.source || "direct"} /></td>
                   <td title={c.medium || undefined}>{truncateUtm(c.medium)}</td>
                   <td title={c.campaign || undefined}>{truncateUtm(c.campaign)}</td>
                   <td title={c.keyword || undefined}>{truncateUtm(c.keyword)}</td>
                   <td>{c.amo_city || "-"}</td>
                   <td>{formatDuration(c.billsec)}</td>
                   <td>
-                    <span
-                      className={`badge ${
-                        c.disposition === "ANSWERED"
-                          ? "answered"
-                          : c.disposition === "BUSY"
-                          ? "busy"
-                          : "missed"
-                      }`}
-                    >
-                      {c.disposition === "ANSWERED"
-                        ? "Answered"
-                        : c.disposition === "BUSY"
-                        ? "Busy"
-                        : "Missed"}
-                    </span>
+                    {(() => {
+                      // Маппинг disposition → CSS-класс и метка
+                      const statusClass = {
+                        "ANSWERED":  "status-badge status-answered",
+                        "NO ANSWER": "status-badge status-no-answer",
+                        "FAILED":    "status-badge status-failed",
+                        "BUSY":      "status-badge status-busy",
+                      }[c.disposition] || "status-badge status-no-answer";
+                      return <span className={statusClass}>{c.disposition || "—"}</span>;
+                    })()}
                   </td>
                   <td>
                     {c.recording_url ? (

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { SourceIcon } from "../components/SourceIcon";
 import {
   LineChart,
   Line,
@@ -66,7 +67,7 @@ function KpiCard({ label, value, sub }) {
       <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
         {label}
       </div>
-      <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{value}</div>
       {sub && (
         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
           {sub}
@@ -119,7 +120,7 @@ function SourceTable({ data }) {
       <tbody>
         {data.map((r) => (
           <tr key={r.source} style={{ borderBottom: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px 8px" }}>{r.source}</td>
+            <td style={{ padding: "6px 8px" }}><SourceIcon source={r.source || "direct"} /></td>
             <td style={{ textAlign: "right", padding: "6px 8px" }}>{r.total}</td>
             <td style={{ textAlign: "right", padding: "6px 8px" }}>
               {r.qualified} ({r.total ? Math.round((r.qualified / r.total) * 100) : 0}%)
