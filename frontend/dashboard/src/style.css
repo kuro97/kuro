@@ -1,234 +1,91 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+@import "tailwindcss";
 
-:root {
-  /* Основные цвета тёмной темы (по спеке) */
-  --bg-primary: #0f172a;
-  --bg-secondary: #1e293b;
-  --bg-tertiary: #334155;
-  --border: #334155;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-
-  /* Алиасы для обратной совместимости с классами */
-  --bg: var(--bg-primary);
-  --bg-card: var(--bg-secondary);
-  --bg-input: var(--bg-tertiary);
-  --card-bg: var(--bg-secondary);
-  --text: var(--text-primary);
-  --text-dim: var(--text-secondary);
-  --accent-hover-old: var(--accent-hover);
-  --green: var(--success);
-  --red: var(--danger);
-  --yellow: var(--warning);
-  --radius: 8px;
+/* Переменные shadcn/ui тёмной темы — slate palette */
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+    --radius: 0.5rem;
+  }
 }
 
-body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  line-height: 1.5;
+/* CSS-переменные для Tailwind v4 — через @theme inline */
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
-.layout {
-  display: flex;
-  min-height: 100vh;
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
 }
 
-.sidebar {
-  width: 220px;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
-  padding: 24px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Кастомный скроллбар под тёмную тему */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(222.2 84% 4.9%);
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(217.2 32.6% 25%);
+  border-radius: 3px;
 }
 
-.sidebar .logo {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--accent);
-  margin-bottom: 24px;
-  padding: 0 8px;
-}
-
-.sidebar a {
-  color: var(--text-secondary);
-  text-decoration: none;
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  font-size: 14px;
-  transition: all 0.15s;
-}
-
-.sidebar a:hover, .sidebar a.active {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.main {
-  flex: 1;
-  padding: 32px;
-  overflow-y: auto;
-}
-
-.main h1 {
-  font-size: 24px;
-  margin-bottom: 24px;
-}
-
-/* Cards */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
-  margin-bottom: 32px;
-}
-
-.stat-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-}
-
-.stat-card .label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-.stat-card .value.green { color: var(--success); }
-.stat-card .value.red { color: var(--danger); }
-.stat-card .value.yellow { color: var(--warning); }
-
-/* Table */
-.table-wrap {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { text-align: left; padding: 12px 16px; color: var(--text-secondary); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; }
-td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
-tr:last-child td { border-bottom: none; }
-tr:hover { background: var(--bg-tertiary); }
-
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
-}
-.badge.answered { background: #10b98122; color: var(--success); }
-.badge.missed { background: #ef444422; color: var(--danger); }
-.badge.busy { background: #f59e0b22; color: var(--warning); }
-
-/* Forms */
-input, select, textarea {
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font-size: 14px;
-  width: 100%;
-}
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
-
-/* Цвет опций в select наследуется от системы, но задаём явно для некоторых браузеров */
-select option {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-/* Стиль для date input — убираем светлый фон иконки в webkit */
+/* date-picker иконка под тёмный фон */
 input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(0.7);
 }
 
-.btn {
-  background: var(--accent);
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: var(--radius);
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.15s;
+/* audio controls — минимальная высота */
+audio {
+  height: 28px;
+  max-width: 200px;
 }
-.btn:hover { background: var(--accent-hover); }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
-.btn-danger { background: var(--danger); }
-.btn-danger:hover { background: #dc2626; }
-
-.form-group { margin-bottom: 16px; }
-.form-group label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
-.form-row { display: flex; gap: 12px; }
-.form-row > * { flex: 1; }
-
-/* Login */
-.login-page {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-}
-.login-box {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 40px;
-  width: 380px;
-}
-.login-box h1 { text-align: center; margin-bottom: 32px; }
-.error-msg { color: var(--danger); font-size: 13px; margin-bottom: 12px; }
-
-/* Pool bar */
-.pool-bar {
-  height: 8px;
-  background: var(--bg-tertiary);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-top: 8px;
-}
-.pool-bar .fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 4px;
-  transition: width 0.3s;
-}
-
-/* Блок с кодом (JS Snippet) */
-code {
-  font-family: "SF Mono", "Fira Code", Consolas, monospace;
-}
-
-/* details/summary стиль */
-details summary {
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-details summary:hover {
-  color: var(--text-primary);
-}
-
-/* Цветные бейджи для статусов звонка */
-.status-badge {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.status-answered  { background: rgba(16,185,129,0.15); color: #10b981; }
-.status-no-answer { background: rgba(148,163,184,0.15); color: #94a3b8; }
-.status-failed    { background: rgba(239,68,68,0.15);  color: #ef4444; }
-.status-busy      { background: rgba(245,158,11,0.15); color: #f59e0b; }

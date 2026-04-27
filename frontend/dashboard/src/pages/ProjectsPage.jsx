@@ -1,5 +1,20 @@
 import React, { useEffect, useState } from "react";
+import { PlusCircle, CheckCircle } from "lucide-react";
 import { api } from "../api";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Badge } from "../components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Separator } from "../components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState([]);
@@ -26,119 +41,131 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1>Projects</h1>
-        <button className="btn" onClick={() => setShowForm(!showForm)}>
-          {showForm ? "Cancel" : "New Project"}
-        </button>
+    <div className="space-y-6">
+      {/* Заголовок */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Проекты</h1>
+        <Button
+          size="sm"
+          variant={showForm ? "outline" : "default"}
+          className="gap-2"
+          onClick={() => setShowForm(!showForm)}
+        >
+          <PlusCircle size={14} />
+          {showForm ? "Отмена" : "Новый проект"}
+        </Button>
       </div>
 
+      {/* Форма создания проекта */}
       {showForm && (
-        <form
-          onSubmit={createProject}
-          style={{
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            padding: 24,
-            marginBottom: 24,
-            marginTop: 16,
-          }}
-        >
-          <div className="form-row">
-            <div className="form-group">
-              <label>Name</label>
-              <input
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="My Website"
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label>Domain</label>
-              <input
-                value={form.domain}
-                onChange={(e) => setForm({ ...form, domain: e.target.value })}
-                placeholder="example.com"
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label>Default Phone</label>
-              <input
-                value={form.default_phone}
-                onChange={(e) => setForm({ ...form, default_phone: e.target.value })}
-                placeholder="+77001234567"
-                required
-              />
-            </div>
-          </div>
-          <button type="submit" className="btn">
-            Create
-          </button>
-        </form>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Создать проект</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={createProject} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <Label>Название</Label>
+                  <Input
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="Мой сайт"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Домен</Label>
+                  <Input
+                    value={form.domain}
+                    onChange={(e) => setForm({ ...form, domain: e.target.value })}
+                    placeholder="example.com"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>Основной телефон</Label>
+                  <Input
+                    value={form.default_phone}
+                    onChange={(e) => setForm({ ...form, default_phone: e.target.value })}
+                    placeholder="+77001234567"
+                    required
+                  />
+                </div>
+              </div>
+              <Button type="submit" size="sm">Создать</Button>
+            </form>
+          </CardContent>
+        </Card>
       )}
 
-      <div className="table-wrap" style={{ marginTop: 16 }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Domain</th>
-              <th>Default Phone</th>
-              <th>API Key</th>
-              <th>Active</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {projects.length === 0 ? (
-              <tr>
-                <td colSpan="6" style={{ textAlign: "center", color: "var(--text-dim)" }}>
-                  No projects yet
-                </td>
-              </tr>
-            ) : (
-              projects.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.name}</td>
-                  <td>{p.domain}</td>
-                  <td>{p.default_phone}</td>
-                  <td>
-                    <code style={{ fontSize: 11, color: "var(--text-dim)" }}>
-                      {p.api_key.slice(0, 12)}...
-                    </code>
-                  </td>
-                  <td>{p.is_active ? "Yes" : "No"}</td>
-                  <td>
-                    <button className="btn btn-sm" onClick={() => selectProject(p.id)}>
-                      Select
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      {/* Таблица проектов */}
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Название</TableHead>
+                <TableHead>Домен</TableHead>
+                <TableHead>Телефон</TableHead>
+                <TableHead>API Key</TableHead>
+                <TableHead>Активен</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {projects.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
+                    Нет проектов
+                  </TableCell>
+                </TableRow>
+              ) : (
+                projects.map((p) => (
+                  <TableRow key={p.id}>
+                    <TableCell className="font-medium">{p.name}</TableCell>
+                    <TableCell className="text-muted-foreground">{p.domain}</TableCell>
+                    <TableCell className="font-mono text-sm">{p.default_phone}</TableCell>
+                    <TableCell>
+                      <code className="text-xs text-muted-foreground font-mono">
+                        {p.api_key.slice(0, 12)}...
+                      </code>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={p.is_active ? "answered" : "noAnswer"}>
+                        {p.is_active ? "Да" : "Нет"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => selectProject(p.id)}
+                      >
+                        <CheckCircle size={13} />
+                        Выбрать
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
 
+      {/* JS Snippet */}
       {projects.length > 0 && (
-        <div style={{ marginTop: 24 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>JS Snippet</h2>
-          <div
-            style={{
-              background: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              padding: 16,
-            }}
-          >
-            <code style={{ fontSize: 12, color: "var(--green)", whiteSpace: "pre-wrap" }}>
-              {`<script src="https://YOUR_SERVER/kurotrack.js"\n  data-api="https://YOUR_SERVER/api/v1"\n  data-key="${projects[0]?.api_key || "YOUR_API_KEY"}"\n  data-selector=".kt-phone">\n</script>`}
-            </code>
-          </div>
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold">JS Snippet</h2>
+          <Card>
+            <CardContent className="pt-4">
+              <code className="text-xs text-emerald-400 font-mono whitespace-pre-wrap">
+                {`<script src="https://YOUR_SERVER/kurotrack.js"\n  data-api="https://YOUR_SERVER/api/v1"\n  data-key="${projects[0]?.api_key || "YOUR_API_KEY"}"\n  data-selector=".kt-phone">\n</script>`}
+              </code>
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>

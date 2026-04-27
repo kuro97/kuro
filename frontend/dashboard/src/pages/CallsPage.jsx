@@ -1,7 +1,22 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { RefreshCw, Play } from "lucide-react";
 import { api } from "../api";
 import { SourceIcon } from "../components/SourceIcon";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select, SelectItem } from "../components/ui/select";
+import { Badge } from "../components/ui/badge";
+import { Card, CardContent } from "../components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 
 function formatDate(iso) {
   if (!iso) return "-";
@@ -16,7 +31,6 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// Обрезает длинное UTM-значение до 20 символов с многоточием
 const UTM_MAX = 20;
 function truncateUtm(val) {
   if (!val) return "-";
@@ -24,7 +38,6 @@ function truncateUtm(val) {
   return val;
 }
 
-// Возвращает строку даты в формате YYYY-MM-DD для input type="date"
 function toDateInputValue(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -32,7 +45,6 @@ function toDateInputValue(date) {
   return `${y}-${m}-${d}`;
 }
 
-// Последние 7 дней: date_to = сегодня, date_from = сегодня - 7 дней
 function defaultDateFrom() {
   const d = new Date();
   d.setDate(d.getDate() - 7);
@@ -43,23 +55,25 @@ function defaultDateTo() {
   return toDateInputValue(new Date());
 }
 
-// Конвертирует YYYY-MM-DD в ISO timestamp начала дня (00:00:00)
-function toISOStart(dateStr) {
-  return `${dateStr}T00:00:00`;
-}
+function toISOStart(dateStr) { return `${dateStr}T00:00:00`; }
+function toISOEnd(dateStr) { return `${dateStr}T23:59:59`; }
 
-// Конвертирует YYYY-MM-DD в ISO timestamp конца дня (23:59:59)
-function toISOEnd(dateStr) {
-  return `${dateStr}T23:59:59`;
-}
+// Маппинг disposition → вариант Badge
+const dispositionVariant = {
+  "ANSWERED": "answered",
+  "NO ANSWER": "noAnswer",
+  "FAILED": "failed",
+  "BUSY": "busy",
+};
 
 export default function CallsPage() {
   const [calls, setCalls] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
+  // Раскрытая строка для записи (опциональная деталь)
+  const [expandedId, setExpandedId] = useState(null);
   const projectId = localStorage.getItem("kt_project");
 
-  // Читаем фильтры из URL, если их нет — ставим дефолтные значения
   const [filter, setFilter] = useState({
     source: searchParams.get("source") || "",
     disposition: searchParams.get("disposition") || "",
@@ -67,7 +81,6 @@ export default function CallsPage() {
     date_to: searchParams.get("date_to") || defaultDateTo(),
   });
 
-  // Выполняет запрос звонков с текущим фильтром
   function fetchCalls(currentFilter) {
     if (!projectId) return;
     setLoading(true);
@@ -84,14 +97,11 @@ export default function CallsPage() {
       .finally(() => setLoading(false));
   }
 
-  // Обработчик кнопки «Обновить» — перезапрашивает данные с теми же параметрами
   function handleRefresh() {
     fetchCalls(filter);
   }
 
-  // При изменении фильтра — обновляем URL и перезапрашиваем данные
   useEffect(() => {
-    // Синхронизируем query string с текущим состоянием фильтра
     const params = {};
     if (filter.source) params.source = filter.source;
     if (filter.disposition) params.disposition = filter.disposition;
@@ -103,126 +113,158 @@ export default function CallsPage() {
   }, [projectId, filter]);
 
   return (
-    <div>
-      <h1>Calls</h1>
+    <div className="space-y-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Звонки</h1>
 
-      <div className="form-row" style={{ marginBottom: 16 }}>
-        {/* Фильтр по дате: От */}
-        <div className="form-group">
-          <label>От</label>
-          <input
+      {/* Фильтры */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>От</Label>
+          <Input
             type="date"
             value={filter.date_from}
             max={filter.date_to}
             onChange={(e) => setFilter({ ...filter, date_from: e.target.value })}
+            className="w-40"
           />
         </div>
-        {/* Фильтр по дате: До */}
-        <div className="form-group">
-          <label>До</label>
-          <input
+        <div className="flex flex-col gap-1.5">
+          <Label>До</Label>
+          <Input
             type="date"
             value={filter.date_to}
             min={filter.date_from}
             onChange={(e) => setFilter({ ...filter, date_to: e.target.value })}
+            className="w-40"
           />
         </div>
-        <div className="form-group">
-          <label>Source</label>
-          <input
-            placeholder="google, yandex..."
+        <div className="flex flex-col gap-1.5">
+          <Label>Источник</Label>
+          <Input
+            placeholder="google, instagram..."
             value={filter.source}
             onChange={(e) => setFilter({ ...filter, source: e.target.value })}
+            className="w-40"
           />
         </div>
-        <div className="form-group">
-          <label>Status</label>
-          <select
+        <div className="flex flex-col gap-1.5">
+          <Label>Статус</Label>
+          <Select
             value={filter.disposition}
             onChange={(e) => setFilter({ ...filter, disposition: e.target.value })}
+            className="w-36"
           >
-            <option value="">All</option>
-            <option value="ANSWERED">Answered</option>
-            <option value="NO ANSWER">Missed</option>
-            <option value="BUSY">Busy</option>
-          </select>
+            <SelectItem value="">Все</SelectItem>
+            <SelectItem value="ANSWERED">Отвечен</SelectItem>
+            <SelectItem value="NO ANSWER">Пропущен</SelectItem>
+            <SelectItem value="BUSY">Занято</SelectItem>
+            <SelectItem value="FAILED">Ошибка</SelectItem>
+          </Select>
         </div>
-        {/* Кнопка ручного обновления списка звонков */}
-        <div className="form-group" style={{ alignSelf: "flex-end" }}>
-          <button
-            className="btn"
-            onClick={handleRefresh}
-            disabled={loading}
-            style={{ cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}
-          >
-            {loading ? "Загрузка..." : "Обновить"}
-          </button>
-        </div>
+        <Button
+          onClick={handleRefresh}
+          disabled={loading}
+          size="sm"
+          className="gap-2"
+        >
+          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+          {loading ? "Загрузка..." : "Обновить"}
+        </Button>
       </div>
 
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Caller</th>
-              <th>Tracking #</th>
-              <th>Source</th>
-              <th>Medium</th>
-              <th>Campaign</th>
-              <th>Keyword</th>
-              <th>City</th>
-              <th>Duration</th>
-              <th>Status</th>
-              <th>Recording</th>
-            </tr>
-          </thead>
-          <tbody>
-            {calls.length === 0 ? (
-              <tr>
-                <td colSpan="11" style={{ textAlign: "center", color: "var(--text-dim)" }}>
-                  Нет звонков за выбранный период
-                </td>
-              </tr>
-            ) : (
-              calls.map((c) => (
-                <tr key={c.id}>
-                  <td>{formatDate(c.started_at)}</td>
-                  <td>{c.caller_number}</td>
-                  <td>{c.tracking_did}</td>
-                  <td><SourceIcon source={c.source || "direct"} /></td>
-                  <td title={c.medium || undefined}>{truncateUtm(c.medium)}</td>
-                  <td title={c.campaign || undefined}>{truncateUtm(c.campaign)}</td>
-                  <td title={c.keyword || undefined}>{truncateUtm(c.keyword)}</td>
-                  <td>{c.amo_city || "-"}</td>
-                  <td>{formatDuration(c.billsec)}</td>
-                  <td>
-                    {(() => {
-                      // Маппинг disposition → CSS-класс и метка
-                      const statusClass = {
-                        "ANSWERED":  "status-badge status-answered",
-                        "NO ANSWER": "status-badge status-no-answer",
-                        "FAILED":    "status-badge status-failed",
-                        "BUSY":      "status-badge status-busy",
-                      }[c.disposition] || "status-badge status-no-answer";
-                      return <span className={statusClass}>{c.disposition || "—"}</span>;
-                    })()}
-                  </td>
-                  <td>
-                    {c.recording_url ? (
-                      <audio controls preload="none" style={{ height: 28, maxWidth: 180 }}>
-                        <source src={c.recording_url} />
-                      </audio>
-                    ) : (
-                      <span style={{ color: "var(--text-dim)", fontSize: 12 }}>-</span>
+      {/* Таблица звонков */}
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Дата</TableHead>
+                <TableHead>Звонящий</TableHead>
+                <TableHead>Номер</TableHead>
+                <TableHead>Источник</TableHead>
+                <TableHead>Кампания</TableHead>
+                <TableHead>Город</TableHead>
+                <TableHead>Длит.</TableHead>
+                <TableHead>Статус</TableHead>
+                <TableHead>Запись</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {calls.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={9}
+                    className="text-center text-muted-foreground py-10"
+                  >
+                    {loading ? "Загрузка..." : "Нет звонков за выбранный период"}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                calls.map((c) => (
+                  <React.Fragment key={c.id}>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => setExpandedId(expandedId === c.id ? null : c.id)}
+                    >
+                      <TableCell className="text-sm">{formatDate(c.started_at)}</TableCell>
+                      <TableCell className="font-mono text-xs">{c.caller_number}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{c.tracking_did}</TableCell>
+                      <TableCell><SourceIcon source={c.source || "direct"} /></TableCell>
+                      <TableCell
+                        className="text-xs text-muted-foreground max-w-32 truncate"
+                        title={c.campaign || undefined}
+                      >
+                        {truncateUtm(c.campaign)}
+                      </TableCell>
+                      <TableCell className="text-sm">{c.amo_city || "-"}</TableCell>
+                      <TableCell className="text-sm tabular-nums">{formatDuration(c.billsec)}</TableCell>
+                      <TableCell>
+                        <Badge variant={dispositionVariant[c.disposition] || "noAnswer"}>
+                          {c.disposition || "—"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        {c.recording_url ? (
+                          <audio controls preload="none" className="h-7 max-w-48">
+                            <source src={c.recording_url} />
+                          </audio>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                    {/* Раскрытая строка с деталями */}
+                    {expandedId === c.id && (
+                      <TableRow className="bg-muted/30">
+                        <TableCell colSpan={9} className="py-3 px-6">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-muted-foreground">
+                            <div>
+                              <div className="font-medium text-foreground mb-0.5">Medium</div>
+                              <div title={c.medium || undefined}>{c.medium || "—"}</div>
+                            </div>
+                            <div>
+                              <div className="font-medium text-foreground mb-0.5">Keyword</div>
+                              <div title={c.keyword || undefined}>{c.keyword || "—"}</div>
+                            </div>
+                            <div>
+                              <div className="font-medium text-foreground mb-0.5">Кампания (полная)</div>
+                              <div>{c.campaign || "—"}</div>
+                            </div>
+                            <div>
+                              <div className="font-medium text-foreground mb-0.5">Tracking DID</div>
+                              <div className="font-mono">{c.tracking_did || "—"}</div>
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
                     )}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+                  </React.Fragment>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }

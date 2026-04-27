@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { SourceIcon } from "../components/SourceIcon";
+import { RefreshCw } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -12,10 +12,24 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { api } from "../api";
+import { SourceIcon } from "../components/SourceIcon";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select, SelectItem } from "../components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 
 // --- Утилиты форматирования ---
 
-// Форматирует число: 1200 → "1.2K", 1500000 → "1.5M"
+// Форматирует число: 1200 → "1.2K"
 function formatNum(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
@@ -45,53 +59,32 @@ function defaultDateTo() {
   return toDateInputValue(new Date());
 }
 
-// Конвертирует YYYY-MM-DD в ISO timestamp
 function toISOStart(s) { return `${s}T00:00:00`; }
 function toISOEnd(s) { return `${s}T23:59:59`; }
 
-// --- Компоненты ---
-
-// KPI-карточка
+// --- KPI карточка ---
 function KpiCard({ label, value, sub }) {
   return (
-    <div
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: 8,
-        padding: "16px 20px",
-        background: "var(--bg-secondary)",
-        minWidth: 120,
-        boxShadow: "0 1px 3px rgba(0,0,0,0.4)",
-      }}
-    >
-      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{value}</div>
+    <Card>
+      <CardHeader className="pb-2">
+        <CardDescription>{label}</CardDescription>
+        <CardTitle className="text-3xl font-bold">{value}</CardTitle>
+      </CardHeader>
       {sub && (
-        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
-          {sub}
-        </div>
+        <CardContent>
+          <p className="text-xs text-muted-foreground">{sub}</p>
+        </CardContent>
       )}
-    </div>
+    </Card>
   );
 }
 
-// Кастомный Tooltip для LineChart — тёмный фон под тему
+// Кастомный Tooltip для recharts — стилизован под тёмную тему
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
   return (
-    <div
-      style={{
-        background: "#1e293b",
-        border: "1px solid #334155",
-        borderRadius: 6,
-        padding: "8px 12px",
-        fontSize: 13,
-        color: "#f1f5f9",
-      }}
-    >
-      <div style={{ marginBottom: 4, fontWeight: 600 }}>Дата: {label}</div>
+    <div className="rounded-lg border border-border bg-popover px-3 py-2 text-sm shadow-md">
+      <div className="mb-1 font-semibold text-foreground">{label}</div>
       {payload.map((p) => (
         <div key={p.dataKey} style={{ color: p.color }}>
           {p.name}: {p.value}
@@ -101,81 +94,77 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-// Таблица по источникам
+// --- Таблица по источникам ---
 function SourceTable({ data }) {
   if (!data || data.length === 0) {
-    return <p style={{ color: "var(--text-secondary)" }}>Нет данных</p>;
+    return <p className="text-sm text-muted-foreground">Нет данных</p>;
   }
   return (
-    <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
-      <thead>
-        <tr style={{ borderBottom: "1px solid var(--border)" }}>
-          <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Источник</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Звонки</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Квалы</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Оплаты</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Выручка</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Источник</TableHead>
+          <TableHead className="text-right">Звонки</TableHead>
+          <TableHead className="text-right">Квалы</TableHead>
+          <TableHead className="text-right">Оплаты</TableHead>
+          <TableHead className="text-right">Выручка</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {data.map((r) => (
-          <tr key={r.source} style={{ borderBottom: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px 8px" }}><SourceIcon source={r.source || "direct"} /></td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>{r.total}</td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>
+          <TableRow key={r.source}>
+            <TableCell><SourceIcon source={r.source || "direct"} /></TableCell>
+            <TableCell className="text-right">{r.total}</TableCell>
+            <TableCell className="text-right">
               {r.qualified} ({r.total ? Math.round((r.qualified / r.total) * 100) : 0}%)
-            </td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>
+            </TableCell>
+            <TableCell className="text-right">
               {r.paid} ({r.total ? Math.round((r.paid / r.total) * 100) : 0}%)
-            </td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>
-              {formatMoney(r.revenue)}
-            </td>
-          </tr>
+            </TableCell>
+            <TableCell className="text-right">{formatMoney(r.revenue)}</TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
-// Таблица по городам
+// --- Таблица по городам ---
 function CityTable({ data }) {
   if (!data || data.length === 0) {
-    return <p style={{ color: "var(--text-secondary)" }}>Нет данных</p>;
+    return <p className="text-sm text-muted-foreground">Нет данных</p>;
   }
   return (
-    <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
-      <thead>
-        <tr style={{ borderBottom: "1px solid var(--border)" }}>
-          <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Город</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Звонки</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Квалы</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Оплаты</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Выручка</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Город</TableHead>
+          <TableHead className="text-right">Звонки</TableHead>
+          <TableHead className="text-right">Квалы</TableHead>
+          <TableHead className="text-right">Оплаты</TableHead>
+          <TableHead className="text-right">Выручка</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {data.map((r) => (
-          <tr key={r.city} style={{ borderBottom: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px 8px" }}>{r.city}</td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>{r.total}</td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>
+          <TableRow key={r.city}>
+            <TableCell>{r.city}</TableCell>
+            <TableCell className="text-right">{r.total}</TableCell>
+            <TableCell className="text-right">
               {r.qualified} ({r.total ? Math.round((r.qualified / r.total) * 100) : 0}%)
-            </td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>
+            </TableCell>
+            <TableCell className="text-right">
               {r.paid} ({r.total ? Math.round((r.paid / r.total) * 100) : 0}%)
-            </td>
-            <td style={{ textAlign: "right", padding: "6px 8px" }}>
-              {formatMoney(r.revenue)}
-            </td>
-          </tr>
+            </TableCell>
+            <TableCell className="text-right">{formatMoney(r.revenue)}</TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
-// --- Главная страница дашборда ---
+// --- Главная страница ---
 export default function DashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [stats, setStats] = useState(null);
@@ -183,7 +172,6 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState(localStorage.getItem("kt_project") || "");
 
-  // Фильтры дат: читаем из URL, дефолт — последние 7 дней
   const [dateFrom, setDateFrom] = useState(
     searchParams.get("date_from") || defaultDateFrom()
   );
@@ -203,7 +191,6 @@ export default function DashboardPage() {
     });
   }, []);
 
-  // Загружаем статистику при изменении проекта или дат
   function fetchStats(pid, from, to) {
     if (!pid) return;
     setLoading(true);
@@ -211,7 +198,6 @@ export default function DashboardPage() {
       .getDashboardStats(pid, toISOStart(from), toISOEnd(to))
       .then((data) => {
         setStats(data);
-        // Синхронизируем URL с фильтрами
         setSearchParams({ date_from: from, date_to: to }, { replace: true });
       })
       .catch(() => setStats(null))
@@ -232,92 +218,81 @@ export default function DashboardPage() {
   }
 
   return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <h1 style={{ margin: 0 }}>Дашборд</h1>
+    <div className="space-y-6">
+      {/* Заголовок */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Дашборд</h1>
         {projects.length > 1 && (
-          <select value={projectId} onChange={(e) => selectProject(e.target.value)}>
+          <Select
+            value={projectId}
+            onChange={(e) => selectProject(e.target.value)}
+            className="w-48"
+          >
             {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
+              <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
             ))}
-          </select>
+          </Select>
         )}
       </div>
 
       {/* Фильтр по датам */}
-      <div className="form-row" style={{ marginBottom: 20 }}>
-        <div className="form-group">
-          <label>Дата от</label>
-          <input
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>Дата от</Label>
+          <Input
             type="date"
             value={dateFrom}
             max={dateTo}
             onChange={(e) => setDateFrom(e.target.value)}
+            className="w-40"
           />
         </div>
-        <div className="form-group">
-          <label>Дата до</label>
-          <input
+        <div className="flex flex-col gap-1.5">
+          <Label>Дата до</Label>
+          <Input
             type="date"
             value={dateTo}
             min={dateFrom}
             onChange={(e) => setDateTo(e.target.value)}
+            className="w-40"
           />
         </div>
-        <div className="form-group" style={{ alignSelf: "flex-end" }}>
-          <button
-            className="btn"
-            onClick={handleRefresh}
-            disabled={loading || !projectId}
-            style={{
-              cursor: loading || !projectId ? "not-allowed" : "pointer",
-              opacity: loading || !projectId ? 0.7 : 1,
-            }}
-          >
-            {loading ? "Загрузка..." : "Обновить"}
-          </button>
-        </div>
+        <Button
+          onClick={handleRefresh}
+          disabled={loading || !projectId}
+          size="sm"
+          className="gap-2"
+        >
+          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+          {loading ? "Загрузка..." : "Обновить"}
+        </Button>
       </div>
 
       {!projectId && projects.length === 0 && (
-        <p style={{ color: "var(--text-dim, #6b7280)" }}>
-          Нет проектов. Создайте проект в разделе Projects.
+        <p className="text-sm text-muted-foreground">
+          Нет проектов. Создайте проект в разделе «Проекты».
         </p>
       )}
 
       {stats && (
         <>
-          {/* KPI карточки */}
-          <div
-            style={{
-              display: "flex",
-              gap: 12,
-              flexWrap: "wrap",
-              marginBottom: 24,
-            }}
-          >
-            <KpiCard label="Звонков" value={stats.total} />
+          {/* KPI карточки — 2 колонки на mobile, 5 на desktop */}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <KpiCard label="Звонков" value={formatNum(stats.total)} />
             <KpiCard
               label="Отвечено"
-              value={stats.answered}
-              sub={stats.total ? `${Math.round((stats.answered / stats.total) * 100)}%` : "0%"}
+              value={formatNum(stats.answered)}
+              sub={stats.total ? `${Math.round((stats.answered / stats.total) * 100)}% от общего` : "0%"}
             />
             <KpiCard
               label="Квалов"
-              value={`${stats.qualified} (${stats.qualified_pct}%)`}
+              value={formatNum(stats.qualified)}
+              sub={`${stats.qualified_pct}%`}
             />
             <KpiCard
               label="Оплат"
-              value={`${stats.paid} (${stats.paid_pct}%)`}
+              value={formatNum(stats.paid)}
+              sub={`${stats.paid_pct}%`}
             />
             <KpiCard
               label="Выручка"
@@ -325,104 +300,86 @@ export default function DashboardPage() {
             />
           </div>
 
-          {/* Линейный график звонков по дням */}
-          <div
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "16px 20px",
-              background: "var(--bg-secondary)",
-              marginBottom: 24,
-            }}
-          >
-            <div style={{ fontWeight: 600, marginBottom: 16 }}>Звонки по дням</div>
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={stats.by_day} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
-                {/* Сетка и оси стилизованы под тёмный фон */}
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis
-                  dataKey="day"
-                  tick={{ fontSize: 11, fill: "#94a3b8" }}
-                  axisLine={{ stroke: "#334155" }}
-                  tickLine={{ stroke: "#334155" }}
-                  tickFormatter={(v) => v.slice(5)} // показываем MM-DD
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: "#94a3b8" }}
-                  axisLine={{ stroke: "#334155" }}
-                  tickLine={{ stroke: "#334155" }}
-                  allowDecimals={false}
-                />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend wrapperStyle={{ color: "#94a3b8" }} />
-                {/* Яркие цвета линий для контраста на тёмном фоне */}
-                <Line
-                  type="monotone"
-                  dataKey="total"
-                  name="Звонки"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="qualified"
-                  name="Квалы"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="paid"
-                  name="Оплаты"
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          {/* График звонков по дням */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Звонки по дням</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={stats.by_day} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(217.2 32.6% 20%)" />
+                  <XAxis
+                    dataKey="day"
+                    tick={{ fontSize: 11, fill: "hsl(215 20.2% 65.1%)" }}
+                    axisLine={{ stroke: "hsl(217.2 32.6% 20%)" }}
+                    tickLine={{ stroke: "hsl(217.2 32.6% 20%)" }}
+                    tickFormatter={(v) => v.slice(5)}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11, fill: "hsl(215 20.2% 65.1%)" }}
+                    axisLine={{ stroke: "hsl(217.2 32.6% 20%)" }}
+                    tickLine={{ stroke: "hsl(217.2 32.6% 20%)" }}
+                    allowDecimals={false}
+                  />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend wrapperStyle={{ color: "hsl(215 20.2% 65.1%)", fontSize: 12 }} />
+                  <Line
+                    type="monotone"
+                    dataKey="total"
+                    name="Звонки"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="qualified"
+                    name="Квалы"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="paid"
+                    name="Оплаты"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 4 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
 
           {/* Таблицы по источникам и городам */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 16,
-            }}
-          >
-            <div
-              style={{
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                padding: "16px 20px",
-                background: "var(--bg-secondary)",
-              }}
-            >
-              <div style={{ fontWeight: 600, marginBottom: 12 }}>По источникам</div>
-              <SourceTable data={stats.by_source} />
-            </div>
-            <div
-              style={{
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                padding: "16px 20px",
-                background: "var(--bg-secondary)",
-              }}
-            >
-              <div style={{ fontWeight: 600, marginBottom: 12 }}>По городам</div>
-              <CityTable data={stats.by_city} />
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">По источникам</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <SourceTable data={stats.by_source} />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">По городам</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <CityTable data={stats.by_city} />
+              </CardContent>
+            </Card>
           </div>
         </>
       )}
 
       {!stats && projectId && !loading && (
-        <p style={{ color: "var(--text-dim, #6b7280)" }}>
+        <p className="text-sm text-muted-foreground">
           Нажмите «Обновить» для загрузки данных.
         </p>
       )}

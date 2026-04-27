@@ -1,11 +1,25 @@
 import React, { useEffect, useState } from "react";
+import { PlusCircle, Trash2 } from "lucide-react";
 import { api } from "../api";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Badge } from "../components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 
 export default function NumbersPage() {
   const [numbers, setNumbers] = useState([]);
   const [phone, setPhone] = useState("");
   const [bulkPhones, setBulkPhones] = useState("");
-  const [poolStats, setPoolStats] = useState(null);
+  const [showBulk, setShowBulk] = useState(false);
   const projectId = localStorage.getItem("kt_project");
 
   function load() {
@@ -34,106 +48,118 @@ export default function NumbersPage() {
     if (phones.length === 0) return;
     await api.bulkAddNumbers({ project_id: projectId, phones });
     setBulkPhones("");
+    setShowBulk(false);
     load();
   }
 
   async function remove(id) {
-    if (!confirm("Remove this number?")) return;
+    if (!confirm("Удалить этот номер?")) return;
     await api.deleteNumber(id);
     load();
   }
 
   return (
-    <div>
-      <h1>Tracking Numbers</h1>
+    <div className="space-y-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Трекинговые номера</h1>
 
-      {/* Add single */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
-        <form onSubmit={addNumber} style={{ display: "flex", gap: 8, flex: 1 }}>
-          <input
+      {/* Добавить один номер */}
+      <form onSubmit={addNumber} className="flex items-end gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label>Номер телефона</Label>
+          <Input
             placeholder="+77001234567"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
-            style={{ maxWidth: 260 }}
+            className="w-60"
           />
-          <button type="submit" className="btn">
-            Add Number
-          </button>
-        </form>
-      </div>
+        </div>
+        <Button type="submit" size="sm" className="gap-2">
+          <PlusCircle size={14} />
+          Добавить
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setShowBulk(!showBulk)}
+        >
+          {showBulk ? "Скрыть" : "Массовое добавление"}
+        </Button>
+      </form>
 
-      {/* Bulk add */}
-      <details style={{ marginBottom: 24 }}>
-        <summary style={{ cursor: "pointer", color: "var(--text-dim)", fontSize: 14 }}>
-          Bulk add numbers
-        </summary>
-        <form onSubmit={bulkAdd} style={{ marginTop: 8 }}>
-          <textarea
-            rows={4}
-            value={bulkPhones}
-            onChange={(e) => setBulkPhones(e.target.value)}
-            placeholder="One number per line"
-            style={{
-              width: "100%",
-              maxWidth: 400,
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text)",
-              padding: 10,
-              borderRadius: "var(--radius)",
-              fontFamily: "inherit",
-              fontSize: 14,
-              resize: "vertical",
-            }}
-          />
-          <br />
-          <button type="submit" className="btn" style={{ marginTop: 8 }}>
-            Bulk Add
-          </button>
-        </form>
-      </details>
+      {/* Массовое добавление */}
+      {showBulk && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">Массовое добавление</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={bulkAdd} className="space-y-3">
+              <textarea
+                rows={4}
+                value={bulkPhones}
+                onChange={(e) => setBulkPhones(e.target.value)}
+                placeholder="Один номер на строку"
+                className="w-full max-w-md rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-vertical"
+              />
+              <Button type="submit" size="sm">Добавить всё</Button>
+            </form>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Table */}
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Phone</th>
-              <th>Type</th>
-              <th>Source Label</th>
-              <th>Active</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {numbers.length === 0 ? (
-              <tr>
-                <td colSpan="5" style={{ textAlign: "center", color: "var(--text-dim)" }}>
-                  No numbers in pool
-                </td>
-              </tr>
-            ) : (
-              numbers.map((n) => (
-                <tr key={n.id}>
-                  <td>{n.phone}</td>
-                  <td>
-                    <span className={`badge ${n.number_type === "dynamic" ? "answered" : "busy"}`}>
-                      {n.number_type}
-                    </span>
-                  </td>
-                  <td>{n.source_label || "-"}</td>
-                  <td>{n.is_active ? "Yes" : "No"}</td>
-                  <td>
-                    <button className="btn btn-sm btn-danger" onClick={() => remove(n.id)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      {/* Таблица номеров */}
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Телефон</TableHead>
+                <TableHead>Тип</TableHead>
+                <TableHead>Метка источника</TableHead>
+                <TableHead>Активен</TableHead>
+                <TableHead></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {numbers.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-10">
+                    Нет номеров в пуле
+                  </TableCell>
+                </TableRow>
+              ) : (
+                numbers.map((n) => (
+                  <TableRow key={n.id}>
+                    <TableCell className="font-mono">{n.phone}</TableCell>
+                    <TableCell>
+                      <Badge variant={n.number_type === "dynamic" ? "dynamic" : "static"}>
+                        {n.number_type}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{n.source_label || "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant={n.is_active ? "answered" : "noAnswer"}>
+                        {n.is_active ? "Да" : "Нет"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => remove(n.id)}
+                      >
+                        <Trash2 size={15} />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }
