@@ -1,24 +1,37 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --bg: #0f1117;
-  --bg-card: #1a1d27;
-  --bg-input: #252836;
-  --text: #e4e4e7;
-  --text-dim: #8b8d97;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --green: #22c55e;
-  --red: #ef4444;
-  --yellow: #eab308;
-  --border: #2e3040;
+  /* Основные цвета тёмной темы (по спеке) */
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --border: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+
+  /* Алиасы для обратной совместимости с классами */
+  --bg: var(--bg-primary);
+  --bg-card: var(--bg-secondary);
+  --bg-input: var(--bg-tertiary);
+  --card-bg: var(--bg-secondary);
+  --text: var(--text-primary);
+  --text-dim: var(--text-secondary);
+  --accent-hover-old: var(--accent-hover);
+  --green: var(--success);
+  --red: var(--danger);
+  --yellow: var(--warning);
   --radius: 8px;
 }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--bg-primary);
+  color: var(--text-primary);
   line-height: 1.5;
 }
 
@@ -29,7 +42,7 @@ body {
 
 .sidebar {
   width: 220px;
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border-right: 1px solid var(--border);
   padding: 24px 16px;
   display: flex;
@@ -46,7 +59,7 @@ body {
 }
 
 .sidebar a {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   text-decoration: none;
   padding: 8px 12px;
   border-radius: var(--radius);
@@ -55,8 +68,8 @@ body {
 }
 
 .sidebar a:hover, .sidebar a.active {
-  background: var(--bg-input);
-  color: var(--text);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .main {
@@ -79,31 +92,32 @@ body {
 }
 
 .stat-card {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
-.stat-card .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-card .label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
 .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-.stat-card .value.green { color: var(--green); }
-.stat-card .value.red { color: var(--red); }
-.stat-card .value.yellow { color: var(--yellow); }
+.stat-card .value.green { color: var(--success); }
+.stat-card .value.red { color: var(--danger); }
+.stat-card .value.yellow { color: var(--warning); }
 
 /* Table */
 .table-wrap {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
 }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { text-align: left; padding: 12px 16px; color: var(--text-dim); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; }
+th { text-align: left; padding: 12px 16px; color: var(--text-secondary); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; }
 td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 tr:last-child td { border-bottom: none; }
-tr:hover { background: var(--bg-input); }
+tr:hover { background: var(--bg-tertiary); }
 
 .badge {
   display: inline-block;
@@ -112,21 +126,32 @@ tr:hover { background: var(--bg-input); }
   font-size: 12px;
   font-weight: 500;
 }
-.badge.answered { background: #22c55e22; color: var(--green); }
-.badge.missed { background: #ef444422; color: var(--red); }
-.badge.busy { background: #eab30822; color: var(--yellow); }
+.badge.answered { background: #10b98122; color: var(--success); }
+.badge.missed { background: #ef444422; color: var(--danger); }
+.badge.busy { background: #f59e0b22; color: var(--warning); }
 
 /* Forms */
-input, select {
-  background: var(--bg-input);
+input, select, textarea {
+  background: var(--bg-tertiary);
   border: 1px solid var(--border);
-  color: var(--text);
+  color: var(--text-primary);
   padding: 10px 14px;
   border-radius: var(--radius);
   font-size: 14px;
   width: 100%;
 }
-input:focus { outline: none; border-color: var(--accent); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+
+/* Цвет опций в select наследуется от системы, но задаём явно для некоторых браузеров */
+select option {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* Стиль для date input — убираем светлый фон иконки в webkit */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+}
 
 .btn {
   background: var(--accent);
@@ -140,11 +165,11 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .btn:hover { background: var(--accent-hover); }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
-.btn-danger { background: var(--red); }
+.btn-danger { background: var(--danger); }
 .btn-danger:hover { background: #dc2626; }
 
 .form-group { margin-bottom: 16px; }
-.form-group label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
+.form-group label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
 .form-row { display: flex; gap: 12px; }
 .form-row > * { flex: 1; }
 
@@ -156,19 +181,19 @@ input:focus { outline: none; border-color: var(--accent); }
   min-height: 100vh;
 }
 .login-box {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 40px;
   width: 380px;
 }
 .login-box h1 { text-align: center; margin-bottom: 32px; }
-.error-msg { color: var(--red); font-size: 13px; margin-bottom: 12px; }
+.error-msg { color: var(--danger); font-size: 13px; margin-bottom: 12px; }
 
 /* Pool bar */
 .pool-bar {
   height: 8px;
-  background: var(--bg-input);
+  background: var(--bg-tertiary);
   border-radius: 4px;
   overflow: hidden;
   margin-top: 8px;
@@ -178,4 +203,18 @@ input:focus { outline: none; border-color: var(--accent); }
   background: var(--accent);
   border-radius: 4px;
   transition: width 0.3s;
+}
+
+/* Блок с кодом (JS Snippet) */
+code {
+  font-family: "SF Mono", "Fira Code", Consolas, monospace;
+}
+
+/* details/summary стиль */
+details summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+details summary:hover {
+  color: var(--text-primary);
 }

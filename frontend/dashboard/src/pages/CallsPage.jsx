@@ -149,9 +149,10 @@ export default function CallsPage() {
         {/* Кнопка ручного обновления списка звонков */}
         <div className="form-group" style={{ alignSelf: "flex-end" }}>
           <button
+            className="btn"
             onClick={handleRefresh}
             disabled={loading}
-            style={{ padding: "6px 16px", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}
+            style={{ cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1 }}
           >
             {loading ? "Загрузка..." : "Обновить"}
           </button>

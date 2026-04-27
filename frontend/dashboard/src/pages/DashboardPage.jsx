@@ -55,19 +55,20 @@ function KpiCard({ label, value, sub }) {
   return (
     <div
       style={{
-        border: "1px solid var(--border, #e5e7eb)",
+        border: "1px solid var(--border)",
         borderRadius: 8,
         padding: "16px 20px",
-        background: "var(--card-bg, #fff)",
+        background: "var(--bg-secondary)",
         minWidth: 120,
+        boxShadow: "0 1px 3px rgba(0,0,0,0.4)",
       }}
     >
-      <div style={{ fontSize: 12, color: "var(--text-dim, #6b7280)", marginBottom: 6 }}>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
         {label}
       </div>
       <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1 }}>{value}</div>
       {sub && (
-        <div style={{ fontSize: 12, color: "var(--text-dim, #6b7280)", marginTop: 4 }}>
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>
           {sub}
         </div>
       )}
@@ -75,17 +76,18 @@ function KpiCard({ label, value, sub }) {
   );
 }
 
-// Кастомный Tooltip для LineChart
+// Кастомный Tooltip для LineChart — тёмный фон под тему
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
   return (
     <div
       style={{
-        background: "#fff",
-        border: "1px solid #e5e7eb",
+        background: "#1e293b",
+        border: "1px solid #334155",
         borderRadius: 6,
         padding: "8px 12px",
         fontSize: 13,
+        color: "#f1f5f9",
       }}
     >
       <div style={{ marginBottom: 4, fontWeight: 600 }}>Дата: {label}</div>
@@ -101,22 +103,22 @@ function CustomTooltip({ active, payload, label }) {
 // Таблица по источникам
 function SourceTable({ data }) {
   if (!data || data.length === 0) {
-    return <p style={{ color: "var(--text-dim, #6b7280)" }}>Нет данных</p>;
+    return <p style={{ color: "var(--text-secondary)" }}>Нет данных</p>;
   }
   return (
     <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
       <thead>
-        <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
-          <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600 }}>Источник</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Звонки</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Квалы</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Оплаты</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Выручка</th>
+        <tr style={{ borderBottom: "1px solid var(--border)" }}>
+          <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Источник</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Звонки</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Квалы</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Оплаты</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Выручка</th>
         </tr>
       </thead>
       <tbody>
         {data.map((r) => (
-          <tr key={r.source} style={{ borderBottom: "1px solid #f3f4f6" }}>
+          <tr key={r.source} style={{ borderBottom: "1px solid var(--border)" }}>
             <td style={{ padding: "6px 8px" }}>{r.source}</td>
             <td style={{ textAlign: "right", padding: "6px 8px" }}>{r.total}</td>
             <td style={{ textAlign: "right", padding: "6px 8px" }}>
@@ -138,22 +140,22 @@ function SourceTable({ data }) {
 // Таблица по городам
 function CityTable({ data }) {
   if (!data || data.length === 0) {
-    return <p style={{ color: "var(--text-dim, #6b7280)" }}>Нет данных</p>;
+    return <p style={{ color: "var(--text-secondary)" }}>Нет данных</p>;
   }
   return (
     <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
       <thead>
-        <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
-          <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600 }}>Город</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Звонки</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Квалы</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Оплаты</th>
-          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600 }}>Выручка</th>
+        <tr style={{ borderBottom: "1px solid var(--border)" }}>
+          <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Город</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Звонки</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Квалы</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Оплаты</th>
+          <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 600, color: "var(--text-secondary)" }}>Выручка</th>
         </tr>
       </thead>
       <tbody>
         {data.map((r) => (
-          <tr key={r.city} style={{ borderBottom: "1px solid #f3f4f6" }}>
+          <tr key={r.city} style={{ borderBottom: "1px solid var(--border)" }}>
             <td style={{ padding: "6px 8px" }}>{r.city}</td>
             <td style={{ textAlign: "right", padding: "6px 8px" }}>{r.total}</td>
             <td style={{ textAlign: "right", padding: "6px 8px" }}>
@@ -272,10 +274,10 @@ export default function DashboardPage() {
         </div>
         <div className="form-group" style={{ alignSelf: "flex-end" }}>
           <button
+            className="btn"
             onClick={handleRefresh}
             disabled={loading || !projectId}
             style={{
-              padding: "6px 20px",
               cursor: loading || !projectId ? "not-allowed" : "pointer",
               opacity: loading || !projectId ? 0.7 : 1,
             }}
@@ -325,30 +327,39 @@ export default function DashboardPage() {
           {/* Линейный график звонков по дням */}
           <div
             style={{
-              border: "1px solid var(--border, #e5e7eb)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
               padding: "16px 20px",
-              background: "var(--card-bg, #fff)",
+              background: "var(--bg-secondary)",
               marginBottom: 24,
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 16 }}>Звонки по дням</div>
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={stats.by_day} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                {/* Сетка и оси стилизованы под тёмный фон */}
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                 <XAxis
                   dataKey="day"
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 11, fill: "#94a3b8" }}
+                  axisLine={{ stroke: "#334155" }}
+                  tickLine={{ stroke: "#334155" }}
                   tickFormatter={(v) => v.slice(5)} // показываем MM-DD
                 />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                <YAxis
+                  tick={{ fontSize: 11, fill: "#94a3b8" }}
+                  axisLine={{ stroke: "#334155" }}
+                  tickLine={{ stroke: "#334155" }}
+                  allowDecimals={false}
+                />
                 <Tooltip content={<CustomTooltip />} />
-                <Legend />
+                <Legend wrapperStyle={{ color: "#94a3b8" }} />
+                {/* Яркие цвета линий для контраста на тёмном фоне */}
                 <Line
                   type="monotone"
                   dataKey="total"
                   name="Звонки"
-                  stroke="#6366f1"
+                  stroke="#3b82f6"
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -357,7 +368,7 @@ export default function DashboardPage() {
                   type="monotone"
                   dataKey="qualified"
                   name="Квалы"
-                  stroke="#22c55e"
+                  stroke="#10b981"
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -366,7 +377,7 @@ export default function DashboardPage() {
                   type="monotone"
                   dataKey="paid"
                   name="Оплаты"
-                  stroke="#eab308"
+                  stroke="#f59e0b"
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -385,10 +396,10 @@ export default function DashboardPage() {
           >
             <div
               style={{
-                border: "1px solid var(--border, #e5e7eb)",
+                border: "1px solid var(--border)",
                 borderRadius: 8,
                 padding: "16px 20px",
-                background: "var(--card-bg, #fff)",
+                background: "var(--bg-secondary)",
               }}
             >
               <div style={{ fontWeight: 600, marginBottom: 12 }}>По источникам</div>
@@ -396,10 +407,10 @@ export default function DashboardPage() {
             </div>
             <div
               style={{
-                border: "1px solid var(--border, #e5e7eb)",
+                border: "1px solid var(--border)",
                 borderRadius: 8,
                 padding: "16px 20px",
-                background: "var(--card-bg, #fff)",
+                background: "var(--bg-secondary)",
               }}
             >
               <div style={{ fontWeight: 600, marginBottom: 12 }}>По городам</div>
