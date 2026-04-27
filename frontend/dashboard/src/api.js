@@ -41,6 +41,7 @@ export const api = {
     request("/projects/", { method: "POST", body: JSON.stringify(data) }),
 
   // Calls
+  // dedupe: true (по умолчанию) — уникальные звонки; false — все legs
   getCalls: (projectId, params = {}) => {
     const qs = new URLSearchParams({ project_id: projectId, ...params }).toString();
     return request(`/calls/?${qs}`);

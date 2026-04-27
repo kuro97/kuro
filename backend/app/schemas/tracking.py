@@ -37,7 +37,8 @@ class DayStats(BaseModel):
 class StatsResponse(BaseModel):
     """Агрегированная статистика по звонкам за период."""
 
-    total: int
+    total: int           # уникальных звонков (по linkedid, дедупликация)
+    total_attempts: int  # всего legs (без дедупликации)
     answered: int
     qualified: int
     paid: int

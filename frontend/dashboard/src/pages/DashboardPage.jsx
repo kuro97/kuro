@@ -278,7 +278,12 @@ export default function DashboardPage() {
         <>
           {/* KPI карточки — 2 колонки на mobile, 5 на desktop */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <KpiCard label="Звонков" value={formatNum(stats.total)} />
+            {/* Карточка "Звонки" показывает уникальные + попытки дозвона */}
+            <KpiCard
+              label="Звонков"
+              value={formatNum(stats.total)}
+              sub={stats.total_attempts != null ? `${stats.total_attempts} попыток дозвона` : undefined}
+            />
             <KpiCard
               label="Отвечено"
               value={formatNum(stats.answered)}

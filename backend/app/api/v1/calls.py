@@ -55,10 +55,14 @@ async def list_calls(
     disposition: str | None = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
+    dedupe: bool = Query(True, description="True — один звонок на linkedid; False — все legs"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Список звонков с фильтрацией. Дедупликация по linkedid — один физический звонок = одна запись."""
-    # Собираем условия фильтрации — они применяются внутри subquery дедупликации
+    """Список звонков с фильтрацией.
+    dedupe=True (по умолчанию) — дедупликация по linkedid, один физический звонок = одна запись.
+    dedupe=False — все сырые legs без схлопывания.
+    """
+    # Собираем условия фильтрации
     base_conditions: list = [Call.project_id == project_id]
     if date_from:
         base_conditions.append(Call.started_at >= date_from)
@@ -69,17 +73,26 @@ async def list_calls(
     if disposition:
         base_conditions.append(Call.disposition == disposition)
 
-    # Subquery: выбираем id "лучшего" leg для каждого физического звонка
-    dedup_subq = _dedup_ids_subquery(base_conditions)
+    if dedupe:
+        # Subquery: выбираем id "лучшего" leg для каждого физического звонка
+        dedup_subq = _dedup_ids_subquery(base_conditions)
+        query = (
+            select(Call)
+            .where(Call.id.in_(select(dedup_subq.c.id)))
+            .order_by(Call.started_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    else:
+        # Все legs без дедупликации
+        query = (
+            select(Call)
+            .where(*base_conditions)
+            .order_by(Call.started_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
 
-    # Основной запрос: фильтр по дедуплицированным id, потом пагинация
-    query = (
-        select(Call)
-        .where(Call.id.in_(select(dedup_subq.c.id)))
-        .order_by(Call.started_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -89,22 +102,36 @@ async def list_unattributed(
     days: int = Query(7, ge=1, le=90),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    dedupe: bool = Query(True, description="True — один звонок на linkedid; False — все legs"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Звонки без атрибуции (project_id IS NULL) — для оператора, чтобы вручную разобрать. Дедупликация по linkedid."""
+    """Звонки без атрибуции (project_id IS NULL) — для оператора, чтобы вручную разобрать.
+    dedupe=True (по умолчанию) — дедупликация по linkedid.
+    dedupe=False — все сырые legs.
+    """
     since = datetime.utcnow() - timedelta(days=days)
     base_conditions = [Call.project_id.is_(None), Call.started_at >= since]
 
-    # Subquery: выбираем id "лучшего" leg для каждого физического звонка
-    dedup_subq = _dedup_ids_subquery(base_conditions)
+    if dedupe:
+        # Subquery: выбираем id "лучшего" leg для каждого физического звонка
+        dedup_subq = _dedup_ids_subquery(base_conditions)
+        query = (
+            select(Call)
+            .where(Call.id.in_(select(dedup_subq.c.id)))
+            .order_by(Call.started_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    else:
+        # Все legs без дедупликации
+        query = (
+            select(Call)
+            .where(*base_conditions)
+            .order_by(Call.started_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
 
-    query = (
-        select(Call)
-        .where(Call.id.in_(select(dedup_subq.c.id)))
-        .order_by(Call.started_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -117,7 +144,7 @@ async def call_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням.
-    Все метрики считаются по дедуплицированным записям (один физический звонок = одна запись)."""
+    Возвращает total (уникальных по linkedid) и total_attempts (все legs без дедупликации)."""
     # Базовые условия фильтрации
     base_conditions = [Call.project_id == project_id]
     if date_from:
@@ -131,6 +158,8 @@ async def call_stats(
 
     # --- Итоговые метрики (по дедуплицированным записям) ---
     total_q = select(func.count()).where(Call.id.in_(dedup_ids))
+    # total_attempts — все legs за период без дедупликации
+    total_attempts_q = select(func.count()).where(*base_conditions)
     answered_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.disposition == "ANSWERED")
     qualified_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_qualified == True)
     paid_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_won == True)
@@ -139,6 +168,7 @@ async def call_stats(
     )
 
     total = (await db.scalar(total_q)) or 0
+    total_attempts = (await db.scalar(total_attempts_q)) or 0
     answered = (await db.scalar(answered_q)) or 0
     qualified = (await db.scalar(qualified_q)) or 0
     paid = (await db.scalar(paid_q)) or 0
@@ -252,6 +282,7 @@ async def call_stats(
 
     return StatsResponse(
         total=total,
+        total_attempts=total_attempts,
         answered=answered,
         qualified=qualified,
         paid=paid,

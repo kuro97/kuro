@@ -74,6 +74,9 @@ export default function CallsPage() {
   const [expandedId, setExpandedId] = useState(null);
   const projectId = localStorage.getItem("kt_project");
 
+  // dedupe=true — уникальные звонки (по linkedid); false — все legs
+  const [dedupe, setDedupe] = useState(searchParams.get("dedupe") !== "false");
+
   const [filter, setFilter] = useState({
     source: searchParams.get("source") || "",
     disposition: searchParams.get("disposition") || "",
@@ -81,7 +84,7 @@ export default function CallsPage() {
     date_to: searchParams.get("date_to") || defaultDateTo(),
   });
 
-  function fetchCalls(currentFilter) {
+  function fetchCalls(currentFilter, currentDedupe) {
     if (!projectId) return;
     setLoading(true);
 
@@ -90,6 +93,8 @@ export default function CallsPage() {
     if (currentFilter.disposition) apiParams.disposition = currentFilter.disposition;
     if (currentFilter.date_from) apiParams.date_from = toISOStart(currentFilter.date_from);
     if (currentFilter.date_to) apiParams.date_to = toISOEnd(currentFilter.date_to);
+    // Передаём dedupe только если false — бэкенд по умолчанию true
+    if (!currentDedupe) apiParams.dedupe = "false";
 
     api.getCalls(projectId, apiParams)
       .then(setCalls)
@@ -98,7 +103,7 @@ export default function CallsPage() {
   }
 
   function handleRefresh() {
-    fetchCalls(filter);
+    fetchCalls(filter, dedupe);
   }
 
   useEffect(() => {
@@ -107,10 +112,12 @@ export default function CallsPage() {
     if (filter.disposition) params.disposition = filter.disposition;
     if (filter.date_from) params.date_from = filter.date_from;
     if (filter.date_to) params.date_to = filter.date_to;
+    // Сохраняем dedupe в URL только если false (default — true, не засоряем URL)
+    if (!dedupe) params.dedupe = "false";
     setSearchParams(params, { replace: true });
 
-    fetchCalls(filter);
-  }, [projectId, filter]);
+    fetchCalls(filter, dedupe);
+  }, [projectId, filter, dedupe]);
 
   return (
     <div className="space-y-6">
@@ -170,6 +177,16 @@ export default function CallsPage() {
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           {loading ? "Загрузка..." : "Обновить"}
         </Button>
+        {/* Переключатель дедупликации — скрывает/показывает дубли legs */}
+        <label className="flex items-center gap-2 cursor-pointer select-none text-sm">
+          <input
+            type="checkbox"
+            checked={dedupe}
+            onChange={(e) => setDedupe(e.target.checked)}
+            className="h-4 w-4 rounded border-border accent-primary"
+          />
+          <span>Только уникальные звонки</span>
+        </label>
       </div>
 
       {/* Таблица звонков */}
