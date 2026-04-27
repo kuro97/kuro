@@ -1,15 +1,15 @@
 """API для работы со звонками: список, статистика, фильтрация, графики."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func, cast, Date
+from sqlalchemy import select, func, cast, Date, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.call import Call
-from app.schemas.tracking import CallOut, CallStats
+from app.schemas.tracking import CallOut, CallStats, StatsResponse, SourceStats, CityStats, DayStats
 
 router = APIRouter(prefix="/calls", tags=["calls"])
 
@@ -62,42 +62,151 @@ async def list_unattributed(
     return result.scalars().all()
 
 
-@router.get("/stats", response_model=CallStats)
+@router.get("/stats", response_model=StatsResponse)
 async def call_stats(
     project_id: str = Query(...),
-    days: int = Query(30, le=365),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Агрегированная статистика звонков за период."""
-    since = datetime.utcnow() - timedelta(days=days)
-    base = select(Call).where(Call.project_id == project_id, Call.started_at >= since)
+    """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням."""
+    # Базовые условия фильтрации
+    base_conditions = [Call.project_id == project_id]
+    if date_from:
+        base_conditions.append(Call.started_at >= date_from)
+    if date_to:
+        base_conditions.append(Call.started_at <= date_to)
 
-    total = await db.scalar(select(func.count()).select_from(base.subquery()))
-    answered = await db.scalar(
-        select(func.count()).select_from(
-            base.where(Call.disposition == "ANSWERED").subquery()
-        )
-    )
-    unique = await db.scalar(
-        select(func.count()).select_from(base.where(Call.is_unique).subquery())
-    )
-    target = await db.scalar(
-        select(func.count()).select_from(base.where(Call.is_target).subquery())
-    )
-    avg_dur = await db.scalar(
-        select(func.avg(Call.billsec)).select_from(
-            base.where(Call.disposition == "ANSWERED").subquery()
-        )
+    # --- Итоговые метрики ---
+    total_q = select(func.count()).where(*base_conditions)
+    answered_q = select(func.count()).where(*base_conditions, Call.disposition == "ANSWERED")
+    qualified_q = select(func.count()).where(*base_conditions, Call.amo_qualified == True)
+    paid_q = select(func.count()).where(*base_conditions, Call.amo_won == True)
+    revenue_q = select(func.coalesce(func.sum(Call.amo_deal_amount), 0)).where(
+        *base_conditions, Call.amo_won == True
     )
 
-    return CallStats(
-        total_calls=total or 0,
-        answered_calls=answered or 0,
-        missed_calls=(total or 0) - (answered or 0),
-        unique_calls=unique or 0,
-        target_calls=target or 0,
-        avg_duration=round(avg_dur or 0, 1),
-        answer_rate=round((answered or 0) / total * 100, 1) if total else 0,
+    total = (await db.scalar(total_q)) or 0
+    answered = (await db.scalar(answered_q)) or 0
+    qualified = (await db.scalar(qualified_q)) or 0
+    paid = (await db.scalar(paid_q)) or 0
+    revenue = (await db.scalar(revenue_q)) or 0
+
+    qualified_pct = round(qualified * 100 / total, 1) if total else 0.0
+    paid_pct = round(paid * 100 / total, 1) if total else 0.0
+
+    # --- По источникам (NULL → "direct") ---
+    src_q = (
+        select(
+            func.coalesce(Call.source, "direct").label("source"),
+            func.count().label("total"),
+            func.count().filter(Call.disposition == "ANSWERED").label("answered"),
+            func.count().filter(Call.amo_qualified == True).label("qualified"),
+            func.count().filter(Call.amo_won == True).label("paid"),
+            func.coalesce(
+                func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
+            ).label("revenue"),
+        )
+        .where(*base_conditions)
+        .group_by(func.coalesce(Call.source, "direct"))
+        .order_by(func.count().desc())
+    )
+    src_rows = (await db.execute(src_q)).all()
+    by_source = [
+        SourceStats(
+            source=r.source,
+            total=r.total,
+            answered=r.answered,
+            qualified=r.qualified,
+            paid=r.paid,
+            revenue=r.revenue,
+        )
+        for r in src_rows
+    ]
+
+    # --- По городам (NULL → "Не указан") ---
+    city_q = (
+        select(
+            func.coalesce(Call.amo_city, "Не указан").label("city"),
+            func.count().label("total"),
+            func.count().filter(Call.amo_qualified == True).label("qualified"),
+            func.count().filter(Call.amo_won == True).label("paid"),
+            func.coalesce(
+                func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
+            ).label("revenue"),
+        )
+        .where(*base_conditions)
+        .group_by(func.coalesce(Call.amo_city, "Не указан"))
+        .order_by(func.count().desc())
+    )
+    city_rows = (await db.execute(city_q)).all()
+    by_city = [
+        CityStats(
+            city=r.city,
+            total=r.total,
+            qualified=r.qualified,
+            paid=r.paid,
+            revenue=r.revenue,
+        )
+        for r in city_rows
+    ]
+
+    # --- По дням (с заполнением пропущенных дней нулями) ---
+    # Генерируем полный диапазон дат с нулями, чтобы график был непрерывным
+    day_q = (
+        select(
+            cast(Call.started_at, Date).label("day"),
+            func.count().label("total"),
+            func.count().filter(Call.amo_qualified == True).label("qualified"),
+            func.count().filter(Call.amo_won == True).label("paid"),
+        )
+        .where(*base_conditions)
+        .group_by(cast(Call.started_at, Date))
+        .order_by(cast(Call.started_at, Date))
+    )
+    day_rows = (await db.execute(day_q)).all()
+
+    # Строим словарь day_str -> данные
+    day_map: dict[str, DayStats] = {}
+    for r in day_rows:
+        day_str = str(r.day)
+        day_map[day_str] = DayStats(day=day_str, total=r.total, qualified=r.qualified, paid=r.paid)
+
+    # Определяем диапазон дат для заполнения пробелов
+    if date_from and date_to:
+        range_start = date_from.date()
+        range_end = date_to.date()
+    elif date_from:
+        range_start = date_from.date()
+        range_end = date.today()
+    elif date_to:
+        # Берём 30 дней до date_to
+        range_start = (date_to - timedelta(days=30)).date()
+        range_end = date_to.date()
+    else:
+        range_start = date.today() - timedelta(days=30)
+        range_end = date.today()
+
+    by_day: list[DayStats] = []
+    current = range_start
+    while current <= range_end:
+        day_str = str(current)
+        by_day.append(
+            day_map.get(day_str, DayStats(day=day_str, total=0, qualified=0, paid=0))
+        )
+        current += timedelta(days=1)
+
+    return StatsResponse(
+        total=total,
+        answered=answered,
+        qualified=qualified,
+        paid=paid,
+        revenue=revenue,
+        qualified_pct=qualified_pct,
+        paid_pct=paid_pct,
+        by_source=by_source,
+        by_city=by_city,
+        by_day=by_day,
     )
 
 

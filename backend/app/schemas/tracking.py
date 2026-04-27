@@ -4,6 +4,51 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class SourceStats(BaseModel):
+    """Статистика по источнику трафика."""
+
+    source: str
+    total: int
+    answered: int
+    qualified: int
+    paid: int
+    revenue: int
+
+
+class CityStats(BaseModel):
+    """Статистика по городу (из AMO CRM)."""
+
+    city: str
+    total: int
+    qualified: int
+    paid: int
+    revenue: int
+
+
+class DayStats(BaseModel):
+    """Статистика за один день (для линейного графика)."""
+
+    day: str  # YYYY-MM-DD
+    total: int
+    qualified: int
+    paid: int
+
+
+class StatsResponse(BaseModel):
+    """Агрегированная статистика по звонкам за период."""
+
+    total: int
+    answered: int
+    qualified: int
+    paid: int
+    revenue: int
+    qualified_pct: float
+    paid_pct: float
+    by_source: list[SourceStats]
+    by_city: list[CityStats]
+    by_day: list[DayStats]
+
+
 class GetNumberRequest(BaseModel):
     """Запрос от JS-скрипта на получение подменного номера."""
 

@@ -52,6 +52,14 @@ export const api = {
   getSourcesChart: (projectId, days = 30) =>
     request(`/calls/chart/sources?project_id=${projectId}&days=${days}`),
 
+  // Новый stats endpoint с date_from/date_to и группировками
+  getDashboardStats: (projectId, dateFrom, dateTo) => {
+    const params = new URLSearchParams({ project_id: projectId });
+    if (dateFrom) params.append("date_from", dateFrom);
+    if (dateTo) params.append("date_to", dateTo);
+    return request(`/calls/stats?${params.toString()}`);
+  },
+
   // Numbers
   getNumbers: (projectId) => request(`/numbers/?project_id=${projectId}`),
   addNumber: (data) => request("/numbers/", { method: "POST", body: JSON.stringify(data) }),
