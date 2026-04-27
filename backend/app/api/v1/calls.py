@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, date
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func, cast, Date, text, literal_column
+from sqlalchemy import select, func, cast, Date, text, literal_column, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -12,6 +12,38 @@ from app.models.call import Call
 from app.schemas.tracking import CallOut, CallStats, StatsResponse, SourceStats, CityStats, DayStats
 
 router = APIRouter(prefix="/calls", tags=["calls"])
+
+
+def _dispo_rank():
+    """Ранг диспозиции: чем меньше — тем лучше (ANSWERED — победитель)."""
+    return case(
+        (Call.disposition == "ANSWERED", 1),
+        (Call.disposition == "NO ANSWER", 2),
+        (Call.disposition == "BUSY", 3),
+        (Call.disposition == "FAILED", 4),
+        else_=5,
+    ).label("dispo_rank")
+
+
+def _group_key():
+    """Ключ дедупликации: linkedid если есть, иначе uniqueid (старые записи не схлопываются)."""
+    return func.coalesce(Call.linkedid, Call.uniqueid)
+
+
+def _dedup_ids_subquery(base_conditions: list):
+    """
+    Subquery возвращает id записей-победителей (DISTINCT ON group_key).
+    Каждый физический звонок представлен одной строкой с лучшей диспозицией.
+    """
+    group_key = _group_key()
+    dispo_rank = _dispo_rank()
+    return (
+        select(Call.id)
+        .where(*base_conditions)
+        .order_by(group_key, dispo_rank, Call.billsec.desc(), Call.started_at.asc())
+        .distinct(group_key)
+        .subquery()
+    )
 
 
 @router.get("/", response_model=list[CallOut])
@@ -25,19 +57,29 @@ async def list_calls(
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
 ):
-    """Список звонков с фильтрацией."""
-    query = select(Call).where(Call.project_id == project_id)
-
+    """Список звонков с фильтрацией. Дедупликация по linkedid — один физический звонок = одна запись."""
+    # Собираем условия фильтрации — они применяются внутри subquery дедупликации
+    base_conditions: list = [Call.project_id == project_id]
     if date_from:
-        query = query.where(Call.started_at >= date_from)
+        base_conditions.append(Call.started_at >= date_from)
     if date_to:
-        query = query.where(Call.started_at <= date_to)
+        base_conditions.append(Call.started_at <= date_to)
     if source:
-        query = query.where(Call.source == source)
+        base_conditions.append(Call.source == source)
     if disposition:
-        query = query.where(Call.disposition == disposition)
+        base_conditions.append(Call.disposition == disposition)
 
-    query = query.order_by(Call.started_at.desc()).limit(limit).offset(offset)
+    # Subquery: выбираем id "лучшего" leg для каждого физического звонка
+    dedup_subq = _dedup_ids_subquery(base_conditions)
+
+    # Основной запрос: фильтр по дедуплицированным id, потом пагинация
+    query = (
+        select(Call)
+        .where(Call.id.in_(select(dedup_subq.c.id)))
+        .order_by(Call.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -49,11 +91,16 @@ async def list_unattributed(
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """Звонки без атрибуции (project_id IS NULL) — для оператора, чтобы вручную разобрать."""
+    """Звонки без атрибуции (project_id IS NULL) — для оператора, чтобы вручную разобрать. Дедупликация по linkedid."""
     since = datetime.utcnow() - timedelta(days=days)
+    base_conditions = [Call.project_id.is_(None), Call.started_at >= since]
+
+    # Subquery: выбираем id "лучшего" leg для каждого физического звонка
+    dedup_subq = _dedup_ids_subquery(base_conditions)
+
     query = (
         select(Call)
-        .where(Call.project_id.is_(None), Call.started_at >= since)
+        .where(Call.id.in_(select(dedup_subq.c.id)))
         .order_by(Call.started_at.desc())
         .limit(limit)
         .offset(offset)
@@ -69,7 +116,8 @@ async def call_stats(
     date_to: datetime | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням."""
+    """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням.
+    Все метрики считаются по дедуплицированным записям (один физический звонок = одна запись)."""
     # Базовые условия фильтрации
     base_conditions = [Call.project_id == project_id]
     if date_from:
@@ -77,13 +125,17 @@ async def call_stats(
     if date_to:
         base_conditions.append(Call.started_at <= date_to)
 
-    # --- Итоговые метрики ---
-    total_q = select(func.count()).where(*base_conditions)
-    answered_q = select(func.count()).where(*base_conditions, Call.disposition == "ANSWERED")
-    qualified_q = select(func.count()).where(*base_conditions, Call.amo_qualified == True)
-    paid_q = select(func.count()).where(*base_conditions, Call.amo_won == True)
+    # Subquery с DISTINCT ON group_key — один id на физический звонок
+    dedup_subq = _dedup_ids_subquery(base_conditions)
+    dedup_ids = select(dedup_subq.c.id)
+
+    # --- Итоговые метрики (по дедуплицированным записям) ---
+    total_q = select(func.count()).where(Call.id.in_(dedup_ids))
+    answered_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.disposition == "ANSWERED")
+    qualified_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_qualified == True)
+    paid_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_won == True)
     revenue_q = select(func.coalesce(func.sum(Call.amo_deal_amount), 0)).where(
-        *base_conditions, Call.amo_won == True
+        Call.id.in_(dedup_ids), Call.amo_won == True
     )
 
     total = (await db.scalar(total_q)) or 0
@@ -108,7 +160,7 @@ async def call_stats(
                 func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
             ).label("revenue"),
         )
-        .where(*base_conditions)
+        .where(Call.id.in_(dedup_ids))
         .group_by(Call.source)
         .order_by(func.count().desc())
     )
@@ -137,7 +189,7 @@ async def call_stats(
                 func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
             ).label("revenue"),
         )
-        .where(*base_conditions)
+        .where(Call.id.in_(dedup_ids))
         .group_by(Call.amo_city)
         .order_by(func.count().desc())
     )
@@ -162,7 +214,7 @@ async def call_stats(
             func.count().filter(Call.amo_qualified == True).label("qualified"),
             func.count().filter(Call.amo_won == True).label("paid"),
         )
-        .where(*base_conditions)
+        .where(Call.id.in_(dedup_ids))
         .group_by(cast(Call.started_at, Date))
         .order_by(cast(Call.started_at, Date))
     )
