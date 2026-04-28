@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ami_secret: str = "change-me"
 
     # Number pool
-    default_freeze_time: int = 900  # 15 min in seconds
+    default_freeze_time: int = 3600  # 1 hour in seconds
     heartbeat_interval: int = 30  # seconds
     heartbeat_timeout: int = 60  # seconds without heartbeat = release number
 

@@ -45,6 +45,7 @@ class StatsResponse(BaseModel):
     revenue: int
     qualified_pct: float
     paid_pct: float
+    with_utm: int        # уникальных звонков где есть medium/campaign/keyword
     by_source: list[SourceStats]
     by_city: list[CityStats]
     by_day: list[DayStats]

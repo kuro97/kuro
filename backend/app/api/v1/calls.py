@@ -166,6 +166,11 @@ async def call_stats(
     revenue_q = select(func.coalesce(func.sum(Call.amo_deal_amount), 0)).where(
         Call.id.in_(dedup_ids), Call.amo_won == True
     )
+    # with_utm — звонки у которых есть хотя бы один UTM-параметр (medium/campaign/keyword)
+    with_utm_q = select(func.count()).where(
+        Call.id.in_(dedup_ids),
+        (Call.medium.is_not(None)) | (Call.campaign.is_not(None)) | (Call.keyword.is_not(None)),
+    )
 
     total = (await db.scalar(total_q)) or 0
     total_attempts = (await db.scalar(total_attempts_q)) or 0
@@ -173,6 +178,7 @@ async def call_stats(
     qualified = (await db.scalar(qualified_q)) or 0
     paid = (await db.scalar(paid_q)) or 0
     revenue = (await db.scalar(revenue_q)) or 0
+    with_utm = (await db.scalar(with_utm_q)) or 0
 
     qualified_pct = round(qualified * 100 / total, 1) if total else 0.0
     paid_pct = round(paid * 100 / total, 1) if total else 0.0
@@ -289,6 +295,7 @@ async def call_stats(
         revenue=revenue,
         qualified_pct=qualified_pct,
         paid_pct=paid_pct,
+        with_utm=with_utm,
         by_source=by_source,
         by_city=by_city,
         by_day=by_day,

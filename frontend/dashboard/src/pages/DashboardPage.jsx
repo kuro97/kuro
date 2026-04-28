@@ -278,11 +278,20 @@ export default function DashboardPage() {
         <>
           {/* KPI карточки — 2 колонки на mobile, 5 на desktop */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            {/* Карточка "Звонки" показывает уникальные + попытки дозвона */}
+            {/* Карточка "Звонки" показывает уникальные + попытки дозвона + UTM */}
             <KpiCard
               label="Звонков"
               value={formatNum(stats.total)}
-              sub={stats.total_attempts != null ? `${stats.total_attempts} попыток дозвона` : undefined}
+              sub={
+                <>
+                  {stats.total_attempts != null && (
+                    <span>{stats.total_attempts} попыток дозвона</span>
+                  )}
+                  {stats.with_utm != null && (
+                    <span className="block">{stats.with_utm} с UTM-метками</span>
+                  )}
+                </>
+              }
             />
             <KpiCard
               label="Отвечено"

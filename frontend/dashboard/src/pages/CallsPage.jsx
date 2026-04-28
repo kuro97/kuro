@@ -226,7 +226,17 @@ export default function CallsPage() {
                       <TableCell className="text-sm">{formatDate(c.started_at)}</TableCell>
                       <TableCell className="font-mono text-xs">{c.caller_number}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{c.tracking_did}</TableCell>
-                      <TableCell><SourceIcon source={c.source || "direct"} /></TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          <SourceIcon source={c.source || "direct"} />
+                          {/* Показываем badge если у звонка есть хотя бы один UTM-параметр */}
+                          {(c.medium || c.campaign || c.keyword) && (
+                            <span className="inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium bg-blue-500/15 text-blue-500 leading-none">
+                              UTM
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell
                         className="text-xs text-muted-foreground max-w-32 truncate"
                         title={c.campaign || undefined}
