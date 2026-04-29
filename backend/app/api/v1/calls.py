@@ -1,5 +1,8 @@
 """API для работы со звонками: список, статистика, фильтрация, графики."""
 
+import asyncio
+import hashlib
+import json
 from datetime import datetime, timedelta, date
 
 from fastapi import APIRouter, Depends, Query
@@ -7,7 +10,8 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, cast, Date, text, literal_column, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, async_session
+from app.core.redis import redis_client
 from app.models.call import Call
 from app.schemas.tracking import CallOut, CallStats, StatsResponse, SourceStats, CityStats, DayStats
 
@@ -136,72 +140,66 @@ async def list_unattributed(
     return result.scalars().all()
 
 
-@router.get("/stats", response_model=StatsResponse)
-async def call_stats(
-    project_id: str = Query(...),
-    date_from: datetime | None = Query(None),
-    date_to: datetime | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-):
-    """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням.
-    Возвращает total (уникальных по linkedid) и total_attempts (все legs без дедупликации)."""
-    # Базовые условия фильтрации
-    base_conditions = [Call.project_id == project_id]
-    if date_from:
-        base_conditions.append(Call.started_at >= date_from)
-    if date_to:
-        base_conditions.append(Call.started_at <= date_to)
-
-    # Subquery с DISTINCT ON group_key — один id на физический звонок
-    dedup_subq = _dedup_ids_subquery(base_conditions)
-    dedup_ids = select(dedup_subq.c.id)
-
-    # --- Итоговые метрики (по дедуплицированным записям) ---
-    total_q = select(func.count()).where(Call.id.in_(dedup_ids))
-    # total_attempts — все legs за период без дедупликации
-    total_attempts_q = select(func.count()).where(*base_conditions)
-    answered_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.disposition == "ANSWERED")
-    qualified_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_qualified == True)
-    paid_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_won == True)
-    revenue_q = select(func.coalesce(func.sum(Call.amo_deal_amount), 0)).where(
-        Call.id.in_(dedup_ids), Call.amo_won == True
-    )
-    # with_utm — звонки у которых есть хотя бы один UTM-параметр (medium/campaign/keyword)
-    with_utm_q = select(func.count()).where(
-        Call.id.in_(dedup_ids),
-        (Call.medium.is_not(None)) | (Call.campaign.is_not(None)) | (Call.keyword.is_not(None)),
-    )
-
-    total = (await db.scalar(total_q)) or 0
-    total_attempts = (await db.scalar(total_attempts_q)) or 0
-    answered = (await db.scalar(answered_q)) or 0
-    qualified = (await db.scalar(qualified_q)) or 0
-    paid = (await db.scalar(paid_q)) or 0
-    revenue = (await db.scalar(revenue_q)) or 0
-    with_utm = (await db.scalar(with_utm_q)) or 0
-
-    qualified_pct = round(qualified * 100 / total, 1) if total else 0.0
-    paid_pct = round(paid * 100 / total, 1) if total else 0.0
-
-    # --- По источникам (NULL → "direct") ---
-    # GROUP BY по raw Call.source, замена NULL выполняется в Python
-    src_q = (
-        select(
-            Call.source.label("source"),
-            func.count().label("total"),
-            func.count().filter(Call.disposition == "ANSWERED").label("answered"),
-            func.count().filter(Call.amo_qualified == True).label("qualified"),
-            func.count().filter(Call.amo_won == True).label("paid"),
-            func.coalesce(
-                func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
-            ).label("revenue"),
+async def _kpi_query(base_conditions: list, dedup_ids_subq) -> dict:
+    """KPI-метрики в отдельной сессии: total, answered, qualified, paid, revenue, with_utm."""
+    dedup_ids = select(dedup_ids_subq.c.id)
+    async with async_session() as db:
+        total_q = select(func.count()).where(Call.id.in_(dedup_ids))
+        answered_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.disposition == "ANSWERED")
+        qualified_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_qualified == True)
+        paid_q = select(func.count()).where(Call.id.in_(dedup_ids), Call.amo_won == True)
+        revenue_q = select(func.coalesce(func.sum(Call.amo_deal_amount), 0)).where(
+            Call.id.in_(dedup_ids), Call.amo_won == True
         )
-        .where(Call.id.in_(dedup_ids))
-        .group_by(Call.source)
-        .order_by(func.count().desc())
-    )
-    src_rows = (await db.execute(src_q)).all()
-    by_source = [
+        with_utm_q = select(func.count()).where(
+            Call.id.in_(dedup_ids),
+            (Call.medium.is_not(None)) | (Call.campaign.is_not(None)) | (Call.keyword.is_not(None)),
+        )
+        # Выполняем последовательно внутри одной сессии (они быстрые — COUNT без GROUP BY)
+        total = (await db.scalar(total_q)) or 0
+        answered = (await db.scalar(answered_q)) or 0
+        qualified = (await db.scalar(qualified_q)) or 0
+        paid = (await db.scalar(paid_q)) or 0
+        revenue = (await db.scalar(revenue_q)) or 0
+        with_utm = (await db.scalar(with_utm_q)) or 0
+    return {
+        "total": total,
+        "answered": answered,
+        "qualified": qualified,
+        "paid": paid,
+        "revenue": revenue,
+        "with_utm": with_utm,
+    }
+
+
+async def _total_attempts_query(base_conditions: list) -> int:
+    """Все legs без дедупликации — в отдельной сессии."""
+    async with async_session() as db:
+        q = select(func.count()).where(*base_conditions)
+        return (await db.scalar(q)) or 0
+
+
+async def _by_source_query(dedup_ids_subq) -> list[SourceStats]:
+    """Статистика по источникам трафика — в отдельной сессии."""
+    dedup_ids = select(dedup_ids_subq.c.id)
+    async with async_session() as db:
+        src_q = (
+            select(
+                Call.source.label("source"),
+                func.count().label("total"),
+                func.count().filter(Call.disposition == "ANSWERED").label("answered"),
+                func.count().filter(Call.amo_qualified == True).label("qualified"),
+                func.count().filter(Call.amo_won == True).label("paid"),
+                func.coalesce(
+                    func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
+                ).label("revenue"),
+            )
+            .where(Call.id.in_(dedup_ids))
+            .group_by(Call.source)
+            .order_by(func.count().desc())
+        )
+        rows = (await db.execute(src_q)).all()
+    return [
         SourceStats(
             source=r.source if r.source is not None else "direct",
             total=r.total,
@@ -210,27 +208,30 @@ async def call_stats(
             paid=r.paid,
             revenue=r.revenue,
         )
-        for r in src_rows
+        for r in rows
     ]
 
-    # --- По городам (NULL → "Не указан") ---
-    # GROUP BY по raw Call.amo_city, замена NULL выполняется в Python
-    city_q = (
-        select(
-            Call.amo_city.label("city"),
-            func.count().label("total"),
-            func.count().filter(Call.amo_qualified == True).label("qualified"),
-            func.count().filter(Call.amo_won == True).label("paid"),
-            func.coalesce(
-                func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
-            ).label("revenue"),
+
+async def _by_city_query(dedup_ids_subq) -> list[CityStats]:
+    """Статистика по городам — в отдельной сессии."""
+    dedup_ids = select(dedup_ids_subq.c.id)
+    async with async_session() as db:
+        city_q = (
+            select(
+                Call.amo_city.label("city"),
+                func.count().label("total"),
+                func.count().filter(Call.amo_qualified == True).label("qualified"),
+                func.count().filter(Call.amo_won == True).label("paid"),
+                func.coalesce(
+                    func.sum(Call.amo_deal_amount).filter(Call.amo_won == True), 0
+                ).label("revenue"),
+            )
+            .where(Call.id.in_(dedup_ids))
+            .group_by(Call.amo_city)
+            .order_by(func.count().desc())
         )
-        .where(Call.id.in_(dedup_ids))
-        .group_by(Call.amo_city)
-        .order_by(func.count().desc())
-    )
-    city_rows = (await db.execute(city_q)).all()
-    by_city = [
+        rows = (await db.execute(city_q)).all()
+    return [
         CityStats(
             city=r.city if r.city is not None else "Не указан",
             total=r.total,
@@ -238,25 +239,83 @@ async def call_stats(
             paid=r.paid,
             revenue=r.revenue,
         )
-        for r in city_rows
+        for r in rows
     ]
 
-    # --- По дням (с заполнением пропущенных дней нулями) ---
-    # Генерируем полный диапазон дат с нулями, чтобы график был непрерывным
-    day_q = (
-        select(
-            cast(Call.started_at, Date).label("day"),
-            func.count().label("total"),
-            func.count().filter(Call.amo_qualified == True).label("qualified"),
-            func.count().filter(Call.amo_won == True).label("paid"),
-        )
-        .where(Call.id.in_(dedup_ids))
-        .group_by(cast(Call.started_at, Date))
-        .order_by(cast(Call.started_at, Date))
-    )
-    day_rows = (await db.execute(day_q)).all()
 
-    # Строим словарь day_str -> данные
+async def _by_day_query(dedup_ids_subq) -> list[tuple]:
+    """Статистика по дням — в отдельной сессии. Возвращает сырые строки."""
+    dedup_ids = select(dedup_ids_subq.c.id)
+    async with async_session() as db:
+        day_q = (
+            select(
+                cast(Call.started_at, Date).label("day"),
+                func.count().label("total"),
+                func.count().filter(Call.amo_qualified == True).label("qualified"),
+                func.count().filter(Call.amo_won == True).label("paid"),
+            )
+            .where(Call.id.in_(dedup_ids))
+            .group_by(cast(Call.started_at, Date))
+            .order_by(cast(Call.started_at, Date))
+        )
+        return (await db.execute(day_q)).all()
+
+
+@router.get("/stats", response_model=StatsResponse)
+async def call_stats(
+    project_id: str = Query(...),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням.
+    Возвращает total (уникальных по linkedid) и total_attempts (все legs без дедупликации).
+    Параллельные SQL через asyncio.gather + Redis-кеш 30 секунд."""
+
+    # --- Redis-кеш: проверяем до выполнения тяжёлых запросов ---
+    cache_key_raw = f"stats:{project_id}:{date_from}:{date_to}"
+    cache_key = "stats:" + hashlib.md5(cache_key_raw.encode()).hexdigest()
+
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return StatsResponse.model_validate_json(cached)
+    except Exception:
+        # Redis недоступен — продолжаем без кеша, не падаем
+        pass
+
+    # Базовые условия фильтрации
+    base_conditions = [Call.project_id == project_id]
+    if date_from:
+        base_conditions.append(Call.started_at >= date_from)
+    if date_to:
+        base_conditions.append(Call.started_at <= date_to)
+
+    # Subquery с DISTINCT ON group_key — один id на физический звонок
+    # Строим subquery один раз и передаём во все параллельные запросы
+    dedup_subq = _dedup_ids_subquery(base_conditions)
+
+    # --- Параллельный запуск всех агрегаций через asyncio.gather ---
+    # Каждая функция открывает свою сессию, т.к. одна AsyncSession не поддерживает параллелизм
+    kpi, total_attempts, by_source, by_city, day_rows = await asyncio.gather(
+        _kpi_query(base_conditions, dedup_subq),
+        _total_attempts_query(base_conditions),
+        _by_source_query(dedup_subq),
+        _by_city_query(dedup_subq),
+        _by_day_query(dedup_subq),
+    )
+
+    total = kpi["total"]
+    answered = kpi["answered"]
+    qualified = kpi["qualified"]
+    paid = kpi["paid"]
+    revenue = kpi["revenue"]
+    with_utm = kpi["with_utm"]
+
+    qualified_pct = round(qualified * 100 / total, 1) if total else 0.0
+    paid_pct = round(paid * 100 / total, 1) if total else 0.0
+
+    # --- По дням: заполняем пропущенные дни нулями чтобы график был непрерывным ---
     day_map: dict[str, DayStats] = {}
     for r in day_rows:
         day_str = str(r.day)
@@ -286,7 +345,7 @@ async def call_stats(
         )
         current += timedelta(days=1)
 
-    return StatsResponse(
+    response = StatsResponse(
         total=total,
         total_attempts=total_attempts,
         answered=answered,
@@ -300,6 +359,15 @@ async def call_stats(
         by_city=by_city,
         by_day=by_day,
     )
+
+    # --- Сохраняем в Redis на 30 секунд (TTL — компромисс свежесть/нагрузка) ---
+    try:
+        await redis_client.set(cache_key, response.model_dump_json(), ex=30)
+    except Exception:
+        # Redis недоступен — не падаем, просто без кеша
+        pass
+
+    return response
 
 
 class DailyPoint(BaseModel):
