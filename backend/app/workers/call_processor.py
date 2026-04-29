@@ -4,7 +4,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -280,13 +280,39 @@ async def _handle_cdr(event: dict):
 
             # AMO CRM: создаём лид для любого атрибуцированного входящего звонка.
             # FAILED/BUSY тоже — это потенциальные лиды, клиент пытался связаться.
-            if call.project_id:
+            # Дедупликация: если caller уже звонил за последние 30 дней и лид создан — не дублируем.
+            if call.project_id and call.caller_number:
                 try:
-                    lead_id = await amocrm_client.create_lead_from_call(call, src)
-                    if lead_id:
-                        call.amo_lead_id = lead_id
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+                    existing_row = await db.execute(
+                        select(Call.amo_lead_id)
+                        .where(
+                            Call.caller_number == call.caller_number,
+                            Call.amo_lead_id.is_not(None),
+                            Call.started_at >= cutoff,
+                            Call.id != call.id,
+                        )
+                        .order_by(Call.started_at.desc())
+                        .limit(1)
+                    )
+                    existing_lead_id = existing_row.scalar_one_or_none()
+
+                    if existing_lead_id:
+                        # Повторный caller — привязываем к существующему лиду
+                        call.amo_lead_id = existing_lead_id
                         await db.commit()
-                        await amocrm_client.add_call_note(lead_id, call)
+                        await amocrm_client.add_call_note(existing_lead_id, call)
+                        logger.info(
+                            "AMO: повторный звонок caller=%s — привязан к существующему лиду %s",
+                            call.caller_number, existing_lead_id,
+                        )
+                    else:
+                        # Новый caller или дедуп истёк — создаём новый лид
+                        lead_id = await amocrm_client.create_lead_from_call(call, src)
+                        if lead_id:
+                            call.amo_lead_id = lead_id
+                            await db.commit()
+                            await amocrm_client.add_call_note(lead_id, call)
                 except Exception:
                     logger.exception(
                         "AMO CRM push failed for call uniqueid=%s", event.get("UniqueID")
