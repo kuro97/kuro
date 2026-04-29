@@ -134,22 +134,27 @@ class AmoSyncService:
         self,
         status_id: int | None,
         sort: int | None,
+        qualified_field_value: str | None,
     ) -> tuple[bool, bool]:
-        """Вычисляет (amo_qualified, amo_won) по sort статуса в воронке.
+        """Вычисляет (amo_qualified, amo_won).
 
         Правила:
-          - amo_qualified = sort >= 80 и НЕ status_id 143 (закрыт не реализован)
+          - amo_qualified = кастомное поле "Квалификация пройдена" == "Да"
+            (так считают и менеджеры, и AMO статистика воронки)
           - amo_won = (sort >= 150 и НЕ status_id 143) ИЛИ status_id == 142 (won)
-          - Если sort неизвестен — оба False
         """
-        if sort is None:
-            return False, False
-
         is_lost = status_id == _AMO_STATUS_LOST
         is_system_won = status_id == _AMO_STATUS_WON
 
-        amo_qualified = sort >= _SORT_QUALIFIED and not is_lost
-        amo_won = (sort >= _SORT_PAID and not is_lost) or is_system_won
+        amo_qualified = bool(
+            qualified_field_value
+            and qualified_field_value.strip().lower() in ("да", "yes", "true", "1")
+        )
+
+        amo_won = (
+            (sort is not None and sort >= _SORT_PAID and not is_lost)
+            or is_system_won
+        )
 
         return amo_qualified, amo_won
 
@@ -219,13 +224,20 @@ class AmoSyncService:
                     # amo_city — кастомное поле "Город"
                     amo_city = self._extract_custom_field(lead_data, _FIELD_CITY)
 
+                    # "Квалификация пройдена" — кастомное поле, по нему квал
+                    qualified_field = self._extract_custom_field(
+                        lead_data, "Квалификация пройдена"
+                    )
+
                     # Шаг 4: получаем sort статуса из кеша/API
                     sort: int | None = None
                     if pipeline_id is not None and status_id is not None:
                         sort = await self._get_status_sort(client, pipeline_id, status_id)
 
-                    # Шаг 5: вычисляем квал/оплату по sort
-                    amo_qualified, amo_won = self._calc_qualified_won(status_id, sort)
+                    # Шаг 5: вычисляем квал (по custom field) и оплату (по sort/status)
+                    amo_qualified, amo_won = self._calc_qualified_won(
+                        status_id, sort, qualified_field
+                    )
 
             except Exception:
                 logger.exception("sync_lead: HTTP ошибка при запросе lead_id=%d", lead_id)
