@@ -242,6 +242,23 @@ async def _handle_cdr(event: dict):
                     if tn_obj and tn_obj.source_label:
                         call.source = tn_obj.source_label
 
+            # Нормализация source: приводим кастомные значения utm_source
+            # (которые маркетологи вводят в URL) к каноническим именам
+            # источников чтобы фильтры/KPI не дробились.
+            _SOURCE_ALIASES = {
+                "google_alish": "google_ads",
+                "google": "google_ads",
+                "google_cpc": "google_ads",
+                "fb": "facebook",
+                "fb_ads": "facebook",
+                "ig": "instagram",
+            }
+            if call.source and call.source in _SOURCE_ALIASES:
+                call.source = _SOURCE_ALIASES[call.source]
+            # Если кампания "traffic_mektep_*" — это FB Ads, переопределяем source.
+            if call.campaign and call.campaign.startswith("traffic_mektep_"):
+                call.source = "facebook"
+
             # 6. Запись звонка — проверяем локальный файл
             try:
                 recording_path = recording_service.get_local_path(
