@@ -62,6 +62,9 @@ class AmoCRMClient:
         lead_custom: list[dict] = [
             # Единый маркер всех лидов от KuroTrack — фильтр "все звонки".
             {"field_code": "UTM_REFERRER", "values": [{"value": "kurotrack"}]},
+            # Поле "Отдел" в AMO (field_id=912857): Offline=914379, Online=914381.
+            # Все звонковые лиды по определению offline (клиент позвонил сам).
+            {"field_id": 912857, "values": [{"enum_id": 914379}]},
         ]
         if call.source:
             lead_custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
