@@ -14,6 +14,19 @@ from app.models.call import Call
 logger = logging.getLogger(__name__)
 
 
+# Маппинг source → город для 2GIS-номеров.
+# ID поля "Город" в AMO = 879211 (enum-поле, AMO мапит value на enum по тексту).
+_SOURCE_TO_CITY = {
+    "2gis_almaty":   "Алматы",
+    "2gis_astana":   "Астана",
+    "2gis_shymkent": "Шымкент",
+    "2gis_atyrau":   "Атырау",
+    "2gis_aktobe":   "Актобе",
+}
+
+_FIELD_CITY_ID = 879211
+
+
 class AmoCRMClient:
     """Клиент для работы с AMO CRM API v4."""
 
@@ -84,6 +97,14 @@ class AmoCRMClient:
             did_value = f"did:{call.tracking_did}"
             lead_custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
             lead_custom.append({"field_id": 869447, "values": [{"value": did_value}]})
+        # Город — только для 2GIS-источников. Для site/insta/fb/tiktok не передаём,
+        # AMO сам проставит default ("Другой") — его скроем на дашборде через amo_sync.
+        if call.source in _SOURCE_TO_CITY:
+            lead_custom.append({
+                "field_id": _FIELD_CITY_ID,
+                "values": [{"value": _SOURCE_TO_CITY[call.source]}],
+            })
+
         if lead_custom:
             lead_body["custom_fields_values"] = lead_custom
 
