@@ -221,8 +221,12 @@ class AmoSyncService:
                     # amount (price) → amo_deal_amount
                     deal_amount: int | None = lead_data.get("price")
 
-                    # amo_city — кастомное поле "Город"
+                    # amo_city — кастомное поле "Город".
+                    # Если AMO вернул "Другой" (дефолт для site/insta и т.п.) — пишем None,
+                    # чтобы на дашборде было "—" вместо бессмысленного "Другой".
                     amo_city = self._extract_custom_field(lead_data, _FIELD_CITY)
+                    if amo_city and amo_city.strip() == "Другой":
+                        amo_city = None
 
                     # "Квалификация пройдена" — кастомное поле, по нему квал
                     qualified_field = self._extract_custom_field(
