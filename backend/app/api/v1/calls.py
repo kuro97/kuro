@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, async_session
 from app.core.redis import redis_client
 from app.models.call import Call
-from app.schemas.tracking import CallOut, CallStats, StatsResponse, SourceStats, CityStats, DayStats
+from app.schemas.tracking import CallOut, CallListResponse, CallStats, StatsResponse, SourceStats, CityStats, DayStats
 
 router = APIRouter(prefix="/calls", tags=["calls"])
 
@@ -50,21 +50,22 @@ def _dedup_ids_subquery(base_conditions: list):
     )
 
 
-@router.get("/", response_model=list[CallOut])
+@router.get("/", response_model=CallListResponse)
 async def list_calls(
     project_id: str = Query(...),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     source: str | None = Query(None),
     disposition: str | None = Query(None),
-    limit: int = Query(50, le=200),
+    limit: int = Query(100, le=200),
     offset: int = Query(0),
     dedupe: bool = Query(True, description="True — один звонок на linkedid; False — все legs"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Список звонков с фильтрацией.
+    """Список звонков с фильтрацией и total count для пагинации.
     dedupe=True (по умолчанию) — дедупликация по linkedid, один физический звонок = одна запись.
     dedupe=False — все сырые legs без схлопывания.
+    Возвращает {items: [...], total: int}.
     """
     # Собираем условия фильтрации
     base_conditions: list = [Call.project_id == project_id]
@@ -80,15 +81,24 @@ async def list_calls(
     if dedupe:
         # Subquery: выбираем id "лучшего" leg для каждого физического звонка
         dedup_subq = _dedup_ids_subquery(base_conditions)
+        dedup_ids_sel = select(dedup_subq.c.id)
+
+        # Считаем total по дедуп-subquery
+        count_q = select(func.count()).where(Call.id.in_(dedup_ids_sel))
+        total = (await db.execute(count_q)).scalar() or 0
+
         query = (
             select(Call)
-            .where(Call.id.in_(select(dedup_subq.c.id)))
+            .where(Call.id.in_(dedup_ids_sel))
             .order_by(Call.started_at.desc())
             .limit(limit)
             .offset(offset)
         )
     else:
         # Все legs без дедупликации
+        count_q = select(func.count()).where(*base_conditions)
+        total = (await db.execute(count_q)).scalar() or 0
+
         query = (
             select(Call)
             .where(*base_conditions)
@@ -98,7 +108,8 @@ async def list_calls(
         )
 
     result = await db.execute(query)
-    return result.scalars().all()
+    items = result.scalars().all()
+    return CallListResponse(items=items, total=total)
 
 
 @router.get("/unattributed", response_model=list[CallOut])

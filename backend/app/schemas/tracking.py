@@ -105,6 +105,13 @@ class CallOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CallListResponse(BaseModel):
+    """Ответ списка звонков с пагинацией."""
+
+    items: list[CallOut]
+    total: int
+
+
 class CallStats(BaseModel):
     total_calls: int
     answered_calls: int

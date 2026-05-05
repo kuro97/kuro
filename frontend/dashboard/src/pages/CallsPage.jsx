@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import { RefreshCw, Play } from "lucide-react";
+import { RefreshCw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { api } from "../api";
 import { SourceIcon } from "../components/SourceIcon";
 import { Button } from "../components/ui/button";
@@ -66,13 +66,23 @@ const dispositionVariant = {
   "BUSY": "busy",
 };
 
+// Размер страницы — дефолт 100, максимум 200
+const PAGE_SIZE = 100;
+
 export default function CallsPage() {
   const [calls, setCalls] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   // Раскрытая строка для записи (опциональная деталь)
   const [expandedId, setExpandedId] = useState(null);
   const projectId = localStorage.getItem("kt_project");
+
+  // Текущая страница (1-based), берём из URL
+  const [page, setPage] = useState(() => {
+    const p = parseInt(searchParams.get("page") || "1", 10);
+    return p > 0 ? p : 1;
+  });
 
   // dedupe=true — уникальные звонки (по linkedid); false — все legs
   const [dedupe, setDedupe] = useState(searchParams.get("dedupe") !== "false");
@@ -84,11 +94,17 @@ export default function CallsPage() {
     date_to: searchParams.get("date_to") || defaultDateTo(),
   });
 
-  function fetchCalls(currentFilter, currentDedupe) {
+  // Рассчитываем общее количество страниц
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const fetchCalls = useCallback((currentFilter, currentDedupe, currentPage) => {
     if (!projectId) return;
     setLoading(true);
 
-    const apiParams = {};
+    const apiParams = {
+      limit: PAGE_SIZE,
+      offset: (currentPage - 1) * PAGE_SIZE,
+    };
     if (currentFilter.source) apiParams.source = currentFilter.source;
     if (currentFilter.disposition) apiParams.disposition = currentFilter.disposition;
     if (currentFilter.date_from) apiParams.date_from = toISOStart(currentFilter.date_from);
@@ -97,15 +113,23 @@ export default function CallsPage() {
     if (!currentDedupe) apiParams.dedupe = "false";
 
     api.getCalls(projectId, apiParams)
-      .then(setCalls)
-      .catch(() => setCalls([]))
+      .then((data) => {
+        // Бэкенд возвращает {items, total}
+        setCalls(data.items || []);
+        setTotal(data.total || 0);
+      })
+      .catch(() => {
+        setCalls([]);
+        setTotal(0);
+      })
       .finally(() => setLoading(false));
-  }
+  }, [projectId]);
 
   function handleRefresh() {
-    fetchCalls(filter, dedupe);
+    fetchCalls(filter, dedupe, page);
   }
 
+  // Обновляем URL и делаем fetch при изменении фильтров, dedupe или page
   useEffect(() => {
     const params = {};
     if (filter.source) params.source = filter.source;
@@ -114,10 +138,27 @@ export default function CallsPage() {
     if (filter.date_to) params.date_to = filter.date_to;
     // Сохраняем dedupe в URL только если false (default — true, не засоряем URL)
     if (!dedupe) params.dedupe = "false";
+    // Сохраняем page только если >1 (default — 1, не засоряем URL)
+    if (page > 1) params.page = String(page);
     setSearchParams(params, { replace: true });
 
-    fetchCalls(filter, dedupe);
-  }, [projectId, filter, dedupe]);
+    fetchCalls(filter, dedupe, page);
+  }, [projectId, filter, dedupe, page]);
+
+  // При смене фильтров или dedupe — сбрасываем на первую страницу
+  function handleFilterChange(newFilter) {
+    setFilter(newFilter);
+    setPage(1);
+  }
+
+  function handleDedupeChange(newDedupe) {
+    setDedupe(newDedupe);
+    setPage(1);
+  }
+
+  // Диапазон записей на текущей странице (для текста "Показано X-Y из Z")
+  const rangeFrom = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeTo = Math.min(page * PAGE_SIZE, total);
 
   return (
     <div className="space-y-6">
@@ -131,7 +172,7 @@ export default function CallsPage() {
             type="date"
             value={filter.date_from}
             max={filter.date_to}
-            onChange={(e) => setFilter({ ...filter, date_from: e.target.value })}
+            onChange={(e) => handleFilterChange({ ...filter, date_from: e.target.value })}
             className="w-40"
           />
         </div>
@@ -141,7 +182,7 @@ export default function CallsPage() {
             type="date"
             value={filter.date_to}
             min={filter.date_from}
-            onChange={(e) => setFilter({ ...filter, date_to: e.target.value })}
+            onChange={(e) => handleFilterChange({ ...filter, date_to: e.target.value })}
             className="w-40"
           />
         </div>
@@ -150,7 +191,7 @@ export default function CallsPage() {
           <Input
             placeholder="google, instagram..."
             value={filter.source}
-            onChange={(e) => setFilter({ ...filter, source: e.target.value })}
+            onChange={(e) => handleFilterChange({ ...filter, source: e.target.value })}
             className="w-40"
           />
         </div>
@@ -158,7 +199,7 @@ export default function CallsPage() {
           <Label>Статус</Label>
           <Select
             value={filter.disposition}
-            onChange={(e) => setFilter({ ...filter, disposition: e.target.value })}
+            onChange={(e) => handleFilterChange({ ...filter, disposition: e.target.value })}
             className="w-36"
           >
             <SelectItem value="">Все</SelectItem>
@@ -182,7 +223,7 @@ export default function CallsPage() {
           <input
             type="checkbox"
             checked={dedupe}
-            onChange={(e) => setDedupe(e.target.checked)}
+            onChange={(e) => handleDedupeChange(e.target.checked)}
             className="h-4 w-4 rounded border-border accent-primary"
           />
           <span>Только уникальные звонки</span>
@@ -290,6 +331,61 @@ export default function CallsPage() {
               )}
             </TableBody>
           </Table>
+
+          {/* Пагинация */}
+          <div className="flex items-center justify-between px-4 py-3 border-t">
+            <span className="text-sm text-muted-foreground">
+              {total === 0
+                ? "Нет звонков"
+                : `Показано ${rangeFrom}–${rangeTo} из ${total}`}
+            </span>
+            <div className="flex items-center gap-1">
+              {/* Первая страница */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage(1)}
+                disabled={page <= 1 || loading}
+                title="Первая страница"
+              >
+                <ChevronsLeft size={14} />
+              </Button>
+              {/* Назад */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1 || loading}
+              >
+                <ChevronLeft size={14} />
+                Назад
+              </Button>
+              {/* Номер страницы */}
+              <span className="px-3 text-sm text-muted-foreground">
+                Стр. {page} / {totalPages}
+              </span>
+              {/* Вперёд */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages || loading}
+              >
+                Вперёд
+                <ChevronRight size={14} />
+              </Button>
+              {/* Последняя страница */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage(totalPages)}
+                disabled={page >= totalPages || loading}
+                title="Последняя страница"
+              >
+                <ChevronsRight size={14} />
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
