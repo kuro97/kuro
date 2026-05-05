@@ -97,12 +97,20 @@ class AmoCRMClient:
             did_value = f"did:{call.tracking_did}"
             lead_custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
             lead_custom.append({"field_id": 869447, "values": [{"value": did_value}]})
-        # Город — только для 2GIS-источников. Для site/insta/fb/tiktok не передаём,
-        # AMO сам проставит default ("Другой") — его скроем на дашборде через amo_sync.
+        # Город:
+        #   - для 2GIS-источников передаём конкретный город по value
+        #   - для всех остальных (site/insta/fb/tiktok/direct/null) — "Online"
+        #     (enum_id=914441 в нашем AMO). AMO не позволяет очистить enum-поле
+        #     полностью, а "Online" семантически правильнее чем default "Другой".
         if call.source in _SOURCE_TO_CITY:
             lead_custom.append({
                 "field_id": _FIELD_CITY_ID,
                 "values": [{"value": _SOURCE_TO_CITY[call.source]}],
+            })
+        else:
+            lead_custom.append({
+                "field_id": _FIELD_CITY_ID,
+                "values": [{"enum_id": 914441}],  # Online
             })
 
         if lead_custom:
