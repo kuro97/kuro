@@ -276,8 +276,27 @@ async def _handle_cdr(event: dict):
                     uniqueid, user_field, dst, src,
                 )
 
+            # Проверяем дубликат по uniqueid перед INSERT
+            # AMI может прислать CDR дважды (после переподключения worker-а)
+            existing_call_row = await db.execute(
+                select(Call).where(Call.uniqueid == call.uniqueid)
+            )
+            if existing_call_row.scalar_one_or_none() is not None:
+                logger.info("CDR duplicate skipped: uniqueid=%s", uniqueid)
+                return
+
             db.add(call)
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception as exc:
+                # Защита от race condition: два leg пришли одновременно —
+                # один уже вставил запись, второй получил IntegrityError
+                from sqlalchemy.exc import IntegrityError
+                if isinstance(exc, IntegrityError):
+                    await db.rollback()
+                    logger.info("CDR duplicate (race) skipped: uniqueid=%s", uniqueid)
+                    return
+                raise
 
             # AMO CRM: создаём лид для любого атрибуцированного входящего звонка.
             # FAILED/BUSY тоже — это потенциальные лиды, клиент пытался связаться.
