@@ -3,8 +3,9 @@
 Логика:
   1. AMO присылает webhook leads[add] с новым лидом
   2. Мы проверяем контакты нового лида
-  3. Если у контакта есть закрытый лид с "Причина отказа" = "Гасится" —
-     реанимируем старый лид, новый закрываем как дубликат
+  3. Если у контакта есть любой закрытый лид в pipeline "Новые продажи" —
+     реанимируем корневой (самый старый) лид с маркетинговыми данными,
+     новый закрываем как дубликат
 
 Защита от цикла:
   - Redis lock lead_reopen:{contact_id} TTL=60с
@@ -27,9 +28,6 @@ _STATUS_REOPENED = 48026560      # "Клиент реанимирован"
 _STATUS_CLOSED = 143             # "Закрыто и не реализовано"
 _FIELD_REFUSAL_REASON = 878831   # "Причина отказа"
 _FIELD_CALL_ATTEMPT = 912743     # "call attempt"
-
-# Значение поля "Причина отказа" при автозакрытии salesbot-ом по недозвону
-_REASON_GASITSYA = "Гасится"
 
 # Значение поля "Причина отказа" когда мы сами закрываем дубликат
 _REASON_DUPLICATE = "Дубликат — реанимирован старый лид"
@@ -165,11 +163,11 @@ class LeadReopenService:
             return []
 
     async def _find_closed_lead_by_contact(self, contact_id: int, exclude_lead_id: int) -> dict | None:
-        """Ищет закрытый лид контакта с причиной 'Гасится'.
+        """Ищет корневой закрытый лид контакта (любая причина закрытия).
 
         GET /api/v4/contacts/{contact_id}?with=leads
-        → фильтруем по status_id=143 и field_id=878831 value="Гасится"
-        Если несколько — берём самый свежий (наибольший id).
+        → фильтруем по status_id=143 в pipeline "Новые продажи"
+        Берём самый старый (корневой) лид — в нём маркетинговые данные.
         """
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -209,10 +207,9 @@ class LeadReopenService:
                 if not candidate_ids:
                     return None
 
-                # Для каждого кандидата проверяем: status_id=143, pipeline=3321094, причина="Гасится"
-                # Берём наиболее свежий — с наибольшим id
+                # Берём корневой (самый старый) закрытый лид — в нём UTM/маркетинговые данные
                 # Ограничиваем число запросов чтобы не превысить таймаут webhook AMO
-                candidate_ids_sorted = sorted(candidate_ids, reverse=True)[:5]
+                candidate_ids_sorted = sorted(candidate_ids)[:5]
 
                 for lead_id in candidate_ids_sorted:
                     lead_resp = await client.get(
@@ -233,9 +230,9 @@ class LeadReopenService:
                     if lead_data.get("status_id") != _STATUS_CLOSED:
                         continue
 
-                    # Проверяем причину отказа
+                    # Пропускаем лиды закрытые нами как дубликат
                     reason = self._extract_field_value(lead_data, _FIELD_REFUSAL_REASON)
-                    if reason != _REASON_GASITSYA:
+                    if reason == _REASON_DUPLICATE:
                         continue
 
                     logger.debug(
