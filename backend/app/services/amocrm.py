@@ -14,6 +14,39 @@ from app.models.call import Call
 logger = logging.getLogger(__name__)
 
 
+# Извлечение города из UTM_CAMPAIGN. Маркетологи кодируют город суффиксом:
+#   traffic_mektep_alm, traffic_mektep_ast, Poisk_BIL_Astana и т.п.
+# Ключи — case-insensitive подстроки которые ищем в campaign.
+_CAMPAIGN_TOKEN_TO_CITY = {
+    "almaty":   "Алматы",
+    "_alm":     "Алматы",
+    "astana":   "Астана",
+    "_ast":     "Астана",
+    "shymkent": "Шымкент",
+    "_shy":     "Шымкент",
+    "atyrau":   "Атырау",
+    "_aty":     "Атырау",
+    "aktobe":   "Актобе",
+    "_akt":     "Актобе",
+}
+
+
+def _city_from_campaign(campaign: str | None) -> str | None:
+    """Возвращает название города если в campaign есть распознаваемый токен.
+
+    Ищет case-insensitive, проверяет более длинные ключи первыми
+    (чтобы 'almaty' нашёлся до '_alm' и т.п.).
+    """
+    if not campaign:
+        return None
+    c = campaign.lower()
+    # Сортируем по длине ключа — длинные имена городов проверяем первыми
+    for token in sorted(_CAMPAIGN_TOKEN_TO_CITY, key=len, reverse=True):
+        if token in c:
+            return _CAMPAIGN_TOKEN_TO_CITY[token]
+    return None
+
+
 # Маппинг source → город для 2GIS-номеров.
 # ID поля "Город" в AMO = 879211 (enum-поле, AMO мапит value на enum по тексту).
 _SOURCE_TO_CITY = {
@@ -97,18 +130,15 @@ class AmoCRMClient:
             did_value = f"did:{call.tracking_did}"
             lead_custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
             lead_custom.append({"field_id": 869447, "values": [{"value": did_value}]})
-        # Город:
-        #   - для 2GIS-источников передаём конкретный город по value
-        #   - для всех остальных (site/insta/fb/tiktok/direct/null) — оставляем поле пустым.
-        #     AMO принимает values=null чтобы enum-поле было без значения.
-        if call.source in _SOURCE_TO_CITY:
+        # Город: приоритет — явный 2GIS source. Иначе — пробуем достать из campaign.
+        city_value: str | None = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
+        if city_value:
             lead_custom.append({
                 "field_id": _FIELD_CITY_ID,
-                "values": [{"value": _SOURCE_TO_CITY[call.source]}],
+                "values": [{"value": city_value}],
             })
         else:
-            # Для не-2GIS источников (site/insta/fb/tiktok/...) — оставляем поле пустым.
-            # AMO принимает values=null чтобы enum-поле было без значения.
+            # site/insta/fb-без-кампании — оставляем поле пустым
             lead_custom.append({
                 "field_id": _FIELD_CITY_ID,
                 "values": None,
