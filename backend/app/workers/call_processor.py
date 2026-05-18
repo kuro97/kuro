@@ -92,6 +92,28 @@ async def _handle_hangup(event: dict):
         logger.info("Call ended: uniqueid=%s", uniqueid)
 
 
+async def _find_existing_lead_for_caller(db, caller_number: str, exclude_call_id, window_minutes: int = 30):
+    """Ищет существующий AMO лид для этого номера за последние window_minutes минут.
+
+    Используется для дедупликации multi-leg звонков: когда bridge создаёт несколько
+    SIP-leg'ов одного звонка, только первый создаёт лид, остальные привязываются к нему.
+    Возвращает amo_lead_id или None.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    result = await db.execute(
+        select(Call.amo_lead_id)
+        .where(
+            Call.caller_number == caller_number,
+            Call.amo_lead_id.is_not(None),
+            Call.started_at >= cutoff,
+            Call.id != exclude_call_id,
+        )
+        .order_by(Call.started_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def _handle_cdr(event: dict):
     """CDR — полные данные о звонке. Основная логика обработки.
 
@@ -300,66 +322,100 @@ async def _handle_cdr(event: dict):
 
             # AMO CRM: создаём лид для любого атрибуцированного входящего звонка.
             # FAILED/BUSY тоже — это потенциальные лиды, клиент пытался связаться.
-            # Дедупликация: если caller уже звонил за последние 30 дней и лид создан — не дублируем.
+            # Дедупликация multi-leg: один входящий звонок через bridge создаёт несколько
+            # CDR-событий (по одному на каждый extension менеджера). Чтобы не плодить
+            # дубли в AMO используем двухуровневую защиту:
+            # 1. SQL-проверка за 30 минут — ДО попытки взять lock (быстрый путь)
+            # 2. Redis lock — чтобы два параллельных процесса не прошли в AMO API одновременно
+            # 3. SQL-проверка после взятия lock — финальная защита от race condition
             if call.project_id and call.caller_number:
-                # Lock на caller_number чтобы два leg одного звонка не создали 2 лида параллельно.
                 lock_key = f"amo_lead_lock:{call.caller_number}"
                 lock_acquired = False
                 try:
-                    # SET NX EX — только один процесс получит True. TTL 60с (больше чем AMO API timeout).
-                    lock_acquired = await redis_client.set(lock_key, "1", nx=True, ex=60)
-
-                    if not lock_acquired:
-                        # Другой leg уже создаёт лид — подождём чтобы он закончил, и возьмём из БД.
-                        await asyncio.sleep(3)
-                        existing_row = await db.execute(
-                            select(Call.amo_lead_id)
-                            .where(
-                                Call.caller_number == call.caller_number,
-                                Call.amo_lead_id.is_not(None),
-                                Call.id != call.id,
-                            )
-                            .order_by(Call.started_at.desc())
-                            .limit(1)
+                    # --- Уровень 1: SQL-проверка ДО lock (быстрый путь для последующих leg'ов) ---
+                    # Если другой leg уже создал лид за последние 30 минут — берём его.
+                    # Это покрывает большинство случаев: leg'и приходят с разницей в 1-3 сек,
+                    # к моменту второго leg'а первый уже успел сохранить amo_lead_id в БД.
+                    pre_lock_lead_id = await _find_existing_lead_for_caller(
+                        db, call.caller_number, call.id, window_minutes=30
+                    )
+                    if pre_lock_lead_id:
+                        call.amo_lead_id = pre_lock_lead_id
+                        await db.commit()
+                        logger.info(
+                            "AMO: дубль leg (pre-lock SQL), привязан к лиду %s (caller=%s)",
+                            pre_lock_lead_id, call.caller_number,
                         )
-                        existing_lead_id = existing_row.scalar_one_or_none()
-                        if existing_lead_id:
-                            call.amo_lead_id = existing_lead_id
-                            await db.commit()
-                            logger.info(
-                                "AMO: дубль leg, привязан к лиду %s созданному параллельно (caller=%s)",
-                                existing_lead_id, call.caller_number,
+                        try:
+                            await amocrm_client.add_call_note(pre_lock_lead_id, call)
+                        except Exception:
+                            logger.exception(
+                                "AMO: add_call_note на reuse не сработал (lead=%s)", pre_lock_lead_id
                             )
+                        # Лид уже есть — дальше не идём
+                        pass
                     else:
-                        # Lock наш. Делаем дедуп-проверку + создание.
-                        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-                        existing_row = await db.execute(
-                            select(Call.amo_lead_id)
-                            .where(
-                                Call.caller_number == call.caller_number,
-                                Call.amo_lead_id.is_not(None),
-                                Call.started_at >= cutoff,
-                                Call.id != call.id,
-                            )
-                            .order_by(Call.started_at.desc())
-                            .limit(1)
-                        )
-                        existing_lead_id = existing_row.scalar_one_or_none()
+                        # --- Уровень 2: Redis lock — только один процесс идёт в AMO API ---
+                        # SET NX EX атомарен: только один из параллельных leg'ов получит True.
+                        lock_acquired = await redis_client.set(lock_key, "1", nx=True, ex=60)
 
-                        if existing_lead_id:
-                            call.amo_lead_id = existing_lead_id
-                            await db.commit()
-                            await amocrm_client.add_call_note(existing_lead_id, call)
-                            logger.info(
-                                "AMO: повторный звонок caller=%s — привязан к существующему лиду %s",
-                                call.caller_number, existing_lead_id,
+                        if not lock_acquired:
+                            # Другой leg держит lock прямо сейчас — ждём пока он создаст лид.
+                            await asyncio.sleep(3)
+                            # --- SQL-проверка после ожидания: должен уже быть лид ---
+                            post_wait_lead_id = await _find_existing_lead_for_caller(
+                                db, call.caller_number, call.id, window_minutes=30
                             )
-                        else:
-                            lead_id = await amocrm_client.create_lead_from_call(call, src)
-                            if lead_id:
-                                call.amo_lead_id = lead_id
+                            if post_wait_lead_id:
+                                call.amo_lead_id = post_wait_lead_id
                                 await db.commit()
-                                await amocrm_client.add_call_note(lead_id, call)
+                                logger.info(
+                                    "AMO: дубль leg (post-wait SQL), привязан к лиду %s (caller=%s)",
+                                    post_wait_lead_id, call.caller_number,
+                                )
+                                try:
+                                    await amocrm_client.add_call_note(post_wait_lead_id, call)
+                                except Exception:
+                                    logger.exception(
+                                        "AMO: add_call_note на reuse (post-wait) не сработал (lead=%s)",
+                                        post_wait_lead_id,
+                                    )
+                            else:
+                                logger.warning(
+                                    "AMO: lock не получен и лид не найден после ожидания (caller=%s, uniqueid=%s) — пропускаем",
+                                    call.caller_number, uniqueid,
+                                )
+                        else:
+                            # Lock наш. Делаем финальную SQL-проверку перед созданием:
+                            # защита от случая когда lock истёк (>60с) но лид уже был создан.
+                            # --- Уровень 3: SQL-проверка ПОСЛЕ взятия lock (финальная) ---
+                            post_lock_lead_id = await _find_existing_lead_for_caller(
+                                db, call.caller_number, call.id, window_minutes=30
+                            )
+
+                            if post_lock_lead_id:
+                                # Лид уже есть (создан до истечения предыдущего lock'а)
+                                call.amo_lead_id = post_lock_lead_id
+                                await db.commit()
+                                logger.info(
+                                    "AMO: лид уже существует (post-lock SQL), привязан %s (caller=%s)",
+                                    post_lock_lead_id, call.caller_number,
+                                )
+                                try:
+                                    await amocrm_client.add_call_note(post_lock_lead_id, call)
+                                except Exception:
+                                    logger.exception(
+                                        "AMO: add_call_note на post-lock reuse не сработал (lead=%s)",
+                                        post_lock_lead_id,
+                                    )
+                            else:
+                                # Лида нет — создаём. Это первый и единственный leg который дойдёт сюда.
+                                lead_id = await amocrm_client.create_lead_from_call(call, src)
+                                if lead_id:
+                                    call.amo_lead_id = lead_id
+                                    await db.commit()
+                                    await amocrm_client.add_call_note(lead_id, call)
+
                 except Exception:
                     logger.exception(
                         "AMO CRM push failed for call uniqueid=%s", event.get("UniqueID")
