@@ -60,8 +60,8 @@ _SOURCE_TO_CITY = {
 
 _FIELD_CITY_ID = 879211
 
-# Окно поиска Asterisk-овского лида — 5 минут в секундах
-_ASTERISK_WINDOW_SECONDS = 300
+# Окно поиска свежего лида — 5 минут в секундах
+_RECENT_LEAD_WINDOW_SECONDS = 300
 
 
 class AmoCRMClient:
@@ -125,19 +125,21 @@ class AmoCRMClient:
             })
         return custom
 
-    async def _find_existing_asterisk_lead(
+    async def _find_recent_lead_by_caller(
         self,
         client: httpx.AsyncClient,
         caller: str,
-    ) -> int | None:
-        """Ищет в AMO лид от Asterisk (без UTM_REFERRER=kurotrack) за последние 5 минут.
+    ) -> tuple[int | None, bool]:
+        """Ищет в AMO ЛЮБОЙ свежий лид (5 мин) от того же caller.
 
-        Возвращает lead_id если найден, иначе None.
-        При любой ошибке AMO — возвращает None (fallback на создание нового лида).
+        Возвращает (lead_id, is_ours):
+          - is_ours=True  — это наш kurotrack-лид (UTM_REFERRER=kurotrack)
+          - is_ours=False — это лид от Asterisk-интеграции (без маркера)
+          - (None, False) — ничего не нашлось
         """
         # AMO query принимает номер без + (только цифры)
         phone_no_plus = caller.lstrip("+")
-        threshold_ts = int(time.time()) - _ASTERISK_WINDOW_SECONDS
+        threshold_ts = int(time.time()) - _RECENT_LEAD_WINDOW_SECONDS
 
         try:
             resp = await client.get(
@@ -151,12 +153,12 @@ class AmoCRMClient:
                 "AMO: ошибка поиска лида для caller=%s — создаём новый лид",
                 caller,
             )
-            return None
+            return (None, False)
 
         data = resp.json()
         leads: list[dict] = data.get("_embedded", {}).get("leads", [])
         if not leads:
-            return None
+            return (None, False)
 
         # Сортируем по created_at убывающий — берём самый свежий первым
         leads_sorted = sorted(leads, key=lambda x: x.get("created_at", 0), reverse=True)
@@ -167,25 +169,29 @@ class AmoCRMClient:
             if created_at < threshold_ts:
                 break  # дальше только старее — нет смысла смотреть
 
-            # Проверяем что это НЕ наш лид (нет UTM_REFERRER=kurotrack)
+            # Проверяем наличие маркера UTM_REFERRER=kurotrack
             custom_fields = lead.get("custom_fields_values") or []
-            has_kurotrack_marker = any(
+            is_ours = any(
                 cf.get("field_code") == "UTM_REFERRER"
-                and any(v.get("value") == "kurotrack" for v in (cf.get("values") or []))
+                and any(
+                    str(v.get("value", "")).lower() == "kurotrack"
+                    for v in (cf.get("values") or [])
+                )
                 for cf in custom_fields
             )
-            if not has_kurotrack_marker:
-                return lead["id"]
+            return (lead["id"], is_ours)
 
-        return None
+        return (None, False)
 
     async def create_lead_from_call(self, call: Call, caller: str) -> int | None:
         """Создаёт или обновляет лид в AMO CRM по данным входящего звонка.
 
-        Логика:
-        1. Ищем Asterisk-овский лид за последние 5 минут с этим же номером.
-        2. Если найден — PATCH его нашими UTM/отдел/город, не трогаем имя.
-        3. Если нет — создаём новый лид через /leads/complex как раньше.
+        Логика защиты от дублей при параллельных AMI leg'ах:
+        1. Ищем ЛЮБОЙ свежий лид (5 мин) по caller — наш или Asterisk-овский.
+        2. Если нашли наш (is_ours=True) — возвращаем его id без изменений.
+           Это второй/третий leg того же звонка — дубль подавляется.
+        3. Если нашли Asterisk-овский (is_ours=False) — PATCH его нашими UTM.
+        4. Если ничего нет — создаём новый лид через /leads/complex.
 
         Возвращает lead_id или None при ошибке / отключённой интеграции.
         """
@@ -195,42 +201,49 @@ class AmoCRMClient:
             )
             return None
 
-        custom_fields = self._build_custom_fields(call, caller)
+        lead_custom = self._build_custom_fields(call, caller)
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                # Сначала ищем Asterisk-овский лид чтобы не плодить дубли
-                asterisk_lead_id = await self._find_existing_asterisk_lead(client, caller)
+                # Ищем свежий лид по caller (за 5 минут)
+                existing_id, is_ours = await self._find_recent_lead_by_caller(client, caller)
 
-                if asterisk_lead_id is not None:
-                    # PATCH существующего лида — добавляем наши UTM/отдел/город.
-                    # Имя лида ("87XXX - Входящий") НЕ трогаем.
-                    patch_body: dict = {"custom_fields_values": custom_fields}
+                if existing_id and is_ours:
+                    # Наш же лид от предыдущего leg-а — просто привязываем call, не создаём дубль
+                    logger.info(
+                        "AMO CRM: дубль leg — привязан к нашему лиду id=%s caller=%s uniqueid=%s",
+                        existing_id, caller, call.uniqueid,
+                    )
+                    return existing_id
+
+                if existing_id and not is_ours:
+                    # Asterisk-овский лид — обновляем его нашими UTM/отдел/город
+                    patch_body: dict = {"custom_fields_values": lead_custom}
                     if settings.amo_pipeline_id is not None:
                         patch_body["pipeline_id"] = settings.amo_pipeline_id
                     if settings.amo_responsible_user_id is not None:
                         patch_body["responsible_user_id"] = settings.amo_responsible_user_id
 
                     patch_resp = await client.patch(
-                        f"{self._base_url()}/api/v4/leads/{asterisk_lead_id}",
+                        f"{self._base_url()}/api/v4/leads/{existing_id}",
                         json=patch_body,
                         headers=self._headers(),
                     )
                     patch_resp.raise_for_status()
                     logger.info(
                         "AMO: дополнили UTM на Asterisk-овском лиде id=%s для caller=%s",
-                        asterisk_lead_id, caller,
+                        existing_id, caller,
                     )
-                    return asterisk_lead_id
+                    return existing_id
 
-                # Asterisk-овского лида нет — создаём новый через /leads/complex
+                # Ничего не нашли — создаём новый лид через /leads/complex
                 lead_body: dict = {"name": f"Входящий звонок {caller}"}
                 if settings.amo_pipeline_id is not None:
                     lead_body["pipeline_id"] = settings.amo_pipeline_id
                 if settings.amo_responsible_user_id is not None:
                     lead_body["responsible_user_id"] = settings.amo_responsible_user_id
 
-                lead_body["custom_fields_values"] = custom_fields
+                lead_body["custom_fields_values"] = lead_custom
                 lead_body["_embedded"] = {
                     "contacts": [
                         {
