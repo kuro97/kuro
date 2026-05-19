@@ -155,7 +155,14 @@ class AmoCRMClient:
             )
             return (None, False)
 
-        data = resp.json()
+        # AMO возвращает 204 No Content когда лидов по query нет — это нормально
+        if resp.status_code == 204 or not resp.content:
+            return (None, False)
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning("AMO: пустой/невалидный JSON ответ при поиске лида для caller=%s", caller)
+            return (None, False)
         leads: list[dict] = data.get("_embedded", {}).get("leads", [])
         if not leads:
             return (None, False)
