@@ -5,6 +5,7 @@
 """
 
 import logging
+import time
 
 import httpx
 
@@ -59,6 +60,9 @@ _SOURCE_TO_CITY = {
 
 _FIELD_CITY_ID = 879211
 
+# Окно поиска Asterisk-овского лида — 5 минут в секундах
+_ASTERISK_WINDOW_SECONDS = 300
+
 
 class AmoCRMClient:
     """Клиент для работы с AMO CRM API v4."""
@@ -75,37 +79,13 @@ class AmoCRMClient:
     def _is_configured(self) -> bool:
         return bool(settings.amo_subdomain and settings.amo_token)
 
-    async def create_lead_from_call(self, call: Call, caller: str) -> int | None:
-        """Создаёт лид в AMO CRM по данным входящего звонка.
+    def _build_custom_fields(self, call: Call, caller: str) -> list[dict]:
+        """Собирает список custom_fields_values для лида.
 
-        Возвращает lead_id из ответа AMO или None при ошибке / отключённой интеграции.
+        Используется и при создании нового лида, и при PATCH существующего.
+        Не включает контактные данные — только UTM/отдел/город.
         """
-        if not self._is_configured():
-            logger.warning(
-                "AMO CRM не настроен (amo_subdomain/amo_token пустые) — пропускаем создание лида"
-            )
-            return None
-
-        # Формируем тело запроса: лид + встроенный контакт с телефоном
-        lead_body: dict = {"name": f"Входящий звонок {caller}"}
-        if settings.amo_pipeline_id is not None:
-            lead_body["pipeline_id"] = settings.amo_pipeline_id
-        if settings.amo_responsible_user_id is not None:
-            lead_body["responsible_user_id"] = settings.amo_responsible_user_id
-
-        # Пишем UTM-метки в ДВА места одновременно:
-        # 1. tracking_data поля (по field_code) — для внутренней статистики и
-        #    фильтров воронки AMO (Воронка → Фильтр → utm_source).
-        # 2. text-поля (по field_id) — для отображения непосредственно на
-        #    карточке лида. tracking_data на карточке AMO не показывает.
-        #
-        # ID text-полей у AMO аккаунта qadam (получены через GET /api/v4/leads/custom_fields):
-        #   869441 = UTM_SOURCE
-        #   869443 = UTM_MEDIUM
-        #   869445 = UTM_CAMPAIGN
-        #   869447 = UTM_CONTENT
-        #   869449 = UTM_TERM
-        lead_custom: list[dict] = [
+        custom: list[dict] = [
             # Единый маркер всех лидов от KuroTrack — фильтр "все звонки".
             {"field_code": "UTM_REFERRER", "values": [{"value": "kurotrack"}]},
             # Поле "Отдел" в AMO (field_id=912857): Offline=914379, Online=914381.
@@ -113,56 +93,158 @@ class AmoCRMClient:
             {"field_id": 912857, "values": [{"enum_id": 914379}]},
         ]
         if call.source:
-            lead_custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
-            lead_custom.append({"field_id": 869441, "values": [{"value": call.source}]})
+            custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
+            custom.append({"field_id": 869441, "values": [{"value": call.source}]})
         if call.medium:
-            lead_custom.append({"field_code": "UTM_MEDIUM", "values": [{"value": call.medium}]})
-            lead_custom.append({"field_id": 869443, "values": [{"value": call.medium}]})
+            custom.append({"field_code": "UTM_MEDIUM", "values": [{"value": call.medium}]})
+            custom.append({"field_id": 869443, "values": [{"value": call.medium}]})
         if call.campaign:
-            lead_custom.append({"field_code": "UTM_CAMPAIGN", "values": [{"value": call.campaign}]})
-            lead_custom.append({"field_id": 869445, "values": [{"value": call.campaign}]})
+            custom.append({"field_code": "UTM_CAMPAIGN", "values": [{"value": call.campaign}]})
+            custom.append({"field_id": 869445, "values": [{"value": call.campaign}]})
         if call.keyword:
-            lead_custom.append({"field_code": "UTM_TERM", "values": [{"value": call.keyword}]})
-            lead_custom.append({"field_id": 869449, "values": [{"value": call.keyword}]})
+            custom.append({"field_code": "UTM_TERM", "values": [{"value": call.keyword}]})
+            custom.append({"field_id": 869449, "values": [{"value": call.keyword}]})
         if call.tracking_did:
             # DID кладём в UTM_CONTENT как "did:7004982670" — универсальный способ
             # пометить на какой номер был звонок без создания своего поля.
             did_value = f"did:{call.tracking_did}"
-            lead_custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
-            lead_custom.append({"field_id": 869447, "values": [{"value": did_value}]})
+            custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
+            custom.append({"field_id": 869447, "values": [{"value": did_value}]})
         # Город: приоритет — явный 2GIS source. Иначе — пробуем достать из campaign.
         city_value: str | None = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
         if city_value:
-            lead_custom.append({
+            custom.append({
                 "field_id": _FIELD_CITY_ID,
                 "values": [{"value": city_value}],
             })
         else:
             # site/insta/fb-без-кампании — оставляем поле пустым
-            lead_custom.append({
+            custom.append({
                 "field_id": _FIELD_CITY_ID,
                 "values": None,
             })
+        return custom
 
-        if lead_custom:
-            lead_body["custom_fields_values"] = lead_custom
+    async def _find_existing_asterisk_lead(
+        self,
+        client: httpx.AsyncClient,
+        caller: str,
+    ) -> int | None:
+        """Ищет в AMO лид от Asterisk (без UTM_REFERRER=kurotrack) за последние 5 минут.
 
-        lead_body["_embedded"] = {
-            "contacts": [
-                {
-                    "name": caller,
-                    "custom_fields_values": [
-                        {
-                            "field_code": "PHONE",
-                            "values": [{"value": caller, "enum_code": "MOB"}],
-                        }
-                    ],
-                }
-            ]
-        }
+        Возвращает lead_id если найден, иначе None.
+        При любой ошибке AMO — возвращает None (fallback на создание нового лида).
+        """
+        # AMO query принимает номер без + (только цифры)
+        phone_no_plus = caller.lstrip("+")
+        threshold_ts = int(time.time()) - _ASTERISK_WINDOW_SECONDS
+
+        try:
+            resp = await client.get(
+                f"{self._base_url()}/api/v4/leads",
+                params={"query": phone_no_plus, "limit": 20, "with": "contacts"},
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+        except Exception:
+            logger.warning(
+                "AMO: ошибка поиска лида для caller=%s — создаём новый лид",
+                caller,
+            )
+            return None
+
+        data = resp.json()
+        leads: list[dict] = data.get("_embedded", {}).get("leads", [])
+        if not leads:
+            return None
+
+        # Сортируем по created_at убывающий — берём самый свежий первым
+        leads_sorted = sorted(leads, key=lambda x: x.get("created_at", 0), reverse=True)
+
+        for lead in leads_sorted:
+            created_at = lead.get("created_at", 0)
+            # Лид должен быть создан не раньше чем 5 минут назад
+            if created_at < threshold_ts:
+                break  # дальше только старее — нет смысла смотреть
+
+            # Проверяем что это НЕ наш лид (нет UTM_REFERRER=kurotrack)
+            custom_fields = lead.get("custom_fields_values") or []
+            has_kurotrack_marker = any(
+                cf.get("field_code") == "UTM_REFERRER"
+                and any(v.get("value") == "kurotrack" for v in (cf.get("values") or []))
+                for cf in custom_fields
+            )
+            if not has_kurotrack_marker:
+                return lead["id"]
+
+        return None
+
+    async def create_lead_from_call(self, call: Call, caller: str) -> int | None:
+        """Создаёт или обновляет лид в AMO CRM по данным входящего звонка.
+
+        Логика:
+        1. Ищем Asterisk-овский лид за последние 5 минут с этим же номером.
+        2. Если найден — PATCH его нашими UTM/отдел/город, не трогаем имя.
+        3. Если нет — создаём новый лид через /leads/complex как раньше.
+
+        Возвращает lead_id или None при ошибке / отключённой интеграции.
+        """
+        if not self._is_configured():
+            logger.warning(
+                "AMO CRM не настроен (amo_subdomain/amo_token пустые) — пропускаем создание лида"
+            )
+            return None
+
+        custom_fields = self._build_custom_fields(call, caller)
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
+                # Сначала ищем Asterisk-овский лид чтобы не плодить дубли
+                asterisk_lead_id = await self._find_existing_asterisk_lead(client, caller)
+
+                if asterisk_lead_id is not None:
+                    # PATCH существующего лида — добавляем наши UTM/отдел/город.
+                    # Имя лида ("87XXX - Входящий") НЕ трогаем.
+                    patch_body: dict = {"custom_fields_values": custom_fields}
+                    if settings.amo_pipeline_id is not None:
+                        patch_body["pipeline_id"] = settings.amo_pipeline_id
+                    if settings.amo_responsible_user_id is not None:
+                        patch_body["responsible_user_id"] = settings.amo_responsible_user_id
+
+                    patch_resp = await client.patch(
+                        f"{self._base_url()}/api/v4/leads/{asterisk_lead_id}",
+                        json=patch_body,
+                        headers=self._headers(),
+                    )
+                    patch_resp.raise_for_status()
+                    logger.info(
+                        "AMO: дополнили UTM на Asterisk-овском лиде id=%s для caller=%s",
+                        asterisk_lead_id, caller,
+                    )
+                    return asterisk_lead_id
+
+                # Asterisk-овского лида нет — создаём новый через /leads/complex
+                lead_body: dict = {"name": f"Входящий звонок {caller}"}
+                if settings.amo_pipeline_id is not None:
+                    lead_body["pipeline_id"] = settings.amo_pipeline_id
+                if settings.amo_responsible_user_id is not None:
+                    lead_body["responsible_user_id"] = settings.amo_responsible_user_id
+
+                lead_body["custom_fields_values"] = custom_fields
+                lead_body["_embedded"] = {
+                    "contacts": [
+                        {
+                            "name": caller,
+                            "custom_fields_values": [
+                                {
+                                    "field_code": "PHONE",
+                                    "values": [{"value": caller, "enum_code": "MOB"}],
+                                }
+                            ],
+                        }
+                    ]
+                }
+
                 # /leads/complex создаёт лид вместе с новым контактом в одном запросе.
                 # Обычный /leads требует ссылку на существующий contact id.
                 response = await client.post(
