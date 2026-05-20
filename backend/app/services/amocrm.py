@@ -51,11 +51,18 @@ def _city_from_campaign(campaign: str | None) -> str | None:
 # Маппинг source → город для 2GIS-номеров.
 # ID поля "Город" в AMO = 879211 (enum-поле, AMO мапит value на enum по тексту).
 _SOURCE_TO_CITY = {
+    # 2GIS-листинги — статичные номера в карточках компаний
     "2gis_almaty":   "Алматы",
     "2gis_astana":   "Астана",
     "2gis_shymkent": "Шымкент",
     "2gis_atyrau":   "Атырау",
     "2gis_aktobe":   "Актобе",
+    # Taplink-страницы городов (кнопка "позвонить" на каждый город)
+    "taplink_almaty":   "Алматы",
+    "taplink_astana":   "Астана",
+    "taplink_shymkent": "Шымкент",
+    "taplink_atyrau":   "Атырау",
+    "taplink_aktobe":   "Актобе",
 }
 
 _FIELD_CITY_ID = 879211

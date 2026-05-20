@@ -2,7 +2,7 @@ import React from "react";
 // Camera — ближайшая замена Instagram (lucide-react не содержит бренд-иконок)
 // Share — ближайшая замена Facebook
 // Video — ближайшая замена TikTok
-import { Globe, Camera, Share, MapPin, Phone, MousePointer, Video } from "lucide-react";
+import { Globe, Camera, Share, MapPin, Phone, MousePointer, Video, Link2 } from "lucide-react";
 
 // Маппинг источников на иконки, цвета и метки
 const SOURCE_CONFIG = {
@@ -15,6 +15,14 @@ const SOURCE_CONFIG = {
   "2gis_shymkent": { icon: MapPin,       color: "#0DAB76", label: "2GIS Шымкент" },
   "2gis_atyrau":   { icon: MapPin,       color: "#0DAB76", label: "2GIS Атырау" },
   "2gis_aktobe":   { icon: MapPin,       color: "#0DAB76", label: "2GIS Актобе" },
+  // Taplink — кнопки "позвонить" на странице каждого города
+  "taplink_almaty":   { icon: Link2,        color: "#FF5C00", label: "Taplink Алматы" },
+  "taplink_astana":   { icon: Link2,        color: "#FF5C00", label: "Taplink Астана" },
+  "taplink_shymkent": { icon: Link2,        color: "#FF5C00", label: "Taplink Шымкент" },
+  "taplink_atyrau":   { icon: Link2,        color: "#FF5C00", label: "Taplink Атырау" },
+  "taplink_aktobe":   { icon: Link2,        color: "#FF5C00", label: "Taplink Актобе" },
+  // Instagram bio — номер прикреплён к ссылке в профиле aiplus.ent
+  instagram_bio:   { icon: Camera,       color: "#E4405F", label: "Instagram bio" },
   site:            { icon: Globe,        color: "#3b82f6", label: "Сайт" },
   direct:          { icon: Phone,        color: "#94a3b8", label: "Прямой" },
 };
