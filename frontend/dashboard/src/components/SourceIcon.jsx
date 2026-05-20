@@ -22,7 +22,7 @@ const SOURCE_CONFIG = {
   "taplink_atyrau":   { icon: Link2,        color: "#FF5C00", label: "Taplink Атырау" },
   "taplink_aktobe":   { icon: Link2,        color: "#FF5C00", label: "Taplink Актобе" },
   // Instagram bio — номер прикреплён к ссылке в профиле aiplus.ent
-  instagram_bio:   { icon: Camera,       color: "#E4405F", label: "Instagram bio" },
+  instagram_ent:   { icon: Camera,       color: "#E4405F", label: "Instagram ENT" },
   site:            { icon: Globe,        color: "#3b82f6", label: "Сайт" },
   direct:          { icon: Phone,        color: "#94a3b8", label: "Прямой" },
 };
