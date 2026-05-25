@@ -166,9 +166,9 @@ class AMIClient:
         if (is_our_did or is_inbound_trunk) and did_norm:
             try:
                 # Сохраняем DID по uniqueid и linkedid (TTL 5 минут)
-                await redis_client.set(f"inbound_did:{uniqueid}", did_norm, ex=300)
+                await redis_client.set(f"inbound_did:{uniqueid}", did_norm, ex=7200)
                 if linkedid and linkedid != uniqueid:
-                    await redis_client.set(f"inbound_did:{linkedid}", did_norm, ex=300)
+                    await redis_client.set(f"inbound_did:{linkedid}", did_norm, ex=7200)
                 logger.info(
                     "inbound DID captured: uniqueid=%s linkedid=%s did=%s channel=%s",
                     uniqueid, linkedid, did_norm, channel,
