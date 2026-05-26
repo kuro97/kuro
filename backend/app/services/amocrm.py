@@ -287,6 +287,23 @@ class AmoCRMClient:
                     "AMO CRM: создан лид id=%s для caller=%s uniqueid=%s",
                     lead_id, caller, call.uniqueid,
                 )
+
+                # AMO CRM при POST /leads/complex игнорирует values=null и подставляет
+                # дефолтный enum "Другой" для enum-полей. Исправляем явным PATCH после создания.
+                # PATCH с values=null корректно очищает поле — проверено на API v4.
+                city_value = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
+                if not city_value:
+                    try:
+                        await client.patch(
+                            f"{self._base_url()}/api/v4/leads/{lead_id}",
+                            json={"custom_fields_values": [{"field_id": _FIELD_CITY_ID, "values": None}]},
+                            headers=self._headers(),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "AMO: ошибка очистки города у созданного лида id=%s", lead_id
+                        )
+
                 return lead_id
         except Exception:
             logger.exception(

@@ -171,6 +171,23 @@ async def _handle_cdr(event: dict):
     # Нормализуем DID для матча
     did_norm = normalize_phone(did_raw)
 
+    # Нормализуем caller для ключа lock-а
+    normalized_caller = normalize_phone(src)
+
+    # Защита от race-условия: два leg-а одного звонка пришли в окно 1-2 сек.
+    # Если lock не получен — другой leg уже обрабатывает этот caller.
+    # Ждём 3 сек: к тому моменту первый leg сохранит amo_lead_id в БД,
+    # и SQL pre-check во втором leg-е найдёт его и переиспользует.
+    call_lock_key = f"call_lock:{normalized_caller}"
+    call_lock_acquired = await redis_client.set(call_lock_key, "1", nx=True, ex=120)
+
+    if not call_lock_acquired:
+        logger.info(
+            "call_lock: caller=%s уже обрабатывается другим leg-ом — ждём 3с", normalized_caller
+        )
+        await asyncio.sleep(3)
+        # После паузы продолжаем — SQL pre-check найдёт лид от первого leg-а
+
     # 1. Ищем сессию по нормализованному DID в Redis
     try:
         session_data, project_id = await _find_session_by_did(did_raw)
@@ -486,3 +503,10 @@ async def _handle_cdr(event: dict):
 
     # Очистка кеша
     active_calls.pop(uniqueid, None)
+
+    # Релизим lock на caller (TTL 120 сек подстрахует при любом исходе)
+    if call_lock_acquired:
+        try:
+            await redis_client.delete(call_lock_key)
+        except Exception:
+            pass  # TTL 120 сек подстрахует
