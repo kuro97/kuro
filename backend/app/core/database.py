@@ -22,5 +22,11 @@ class Base(DeclarativeBase):
 
 
 async def get_db() -> AsyncSession:
+    # rollback в finally завершает любую открытую транзакцию (idle in transaction leak).
+    # Если endpoint сам сделал commit — rollback станет no-op. Для read-only это снимает
+    # зависшие коннекты которые иначе забивают pool и приводят к 504.
     async with async_session() as session:
-        yield session
+        try:
+            yield session
+        finally:
+            await session.rollback()
