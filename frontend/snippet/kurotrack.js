@@ -20,6 +20,25 @@
   // Регекс плейсхолдера: телефон-заглушка где все цифры = нули (Tilda-шаблоны)
   var PLACEHOLDER_RE = /[+]?[78][\s\-]*\(?0{3}\)?[\s\-]*0{3}[\s\-]*0{2}[\s\-]*0{2}/g;
 
+  // Site-DNI пул — эти номера на странице тоже подменяем на актуальный.
+  // Нормализованные (последние 10 цифр) для матча в любом формате.
+  var POOL_NUMBERS = ["7004982670", "7004982672", "7004982675", "7004982683", "7004982685"];
+
+  // Строим regex для пул-номера: матчит +7/8 + цифры с любыми разделителями.
+  // Префикс [78] ОБЯЗАТЕЛЕН — защита от ложных срабатываний на случайные числа.
+  // num = "7004982670" → ловит "+7 700 498 26 70", "87004982670", "+7(700)498-26-70"
+  function buildPoolRegex(num) {
+    // num начинается с "7" → паттерн: [+]?[78] + "7" (первая цифра num) + остаток с разделителями
+    var tail = num.substring(1).split("");
+    return new RegExp("[+]?[78][\\s\\-()]*7" + tail.join("[\\s\\-()]*"), "g");
+  }
+
+  // Кешируем regex для каждого пул-номера (строим один раз при загрузке)
+  var POOL_REGEXES = [];
+  for (var _pi = 0; _pi < POOL_NUMBERS.length; _pi++) {
+    POOL_REGEXES.push(buildPoolRegex(POOL_NUMBERS[_pi]));
+  }
+
   if (!API_URL || !API_KEY) {
     console.error("[KuroTrack] data-api and data-key attributes required");
     return;
@@ -138,10 +157,78 @@
     PLACEHOLDER_RE.lastIndex = 0;
   }
 
-  // Применяет оба метода подмены: по CSS-классу и по тексту-плейсхолдеру
+  // Подмена пул-номеров: заменяет любой номер из POOL_NUMBERS на актуальный newPhone.
+  // Используется чтобы клиент мог ставить настоящий номер-заглушку вместо нулей.
+  function replacePoolNumbers(newPhone) {
+    if (!document.body) {
+      return;
+    }
+    var formatted = formatPhone(newPhone);
+    var newPhoneDigits = newPhone.replace(/[^+\d]/g, "");
+    var telHref = "tel:" + newPhoneDigits;
+
+    // Заменяем href в <a href="tel:..."> если там пул-номер
+    var links = document.querySelectorAll("a[href^=\"tel:\"]");
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].getAttribute("href") || "";
+      var hrefDigits = href.replace(/[^\d]/g, "");
+      // Проверяем что href содержит один из пул-номеров
+      var isPool = false;
+      for (var p = 0; p < POOL_NUMBERS.length; p++) {
+        if (hrefDigits.indexOf(POOL_NUMBERS[p]) !== -1) {
+          isPool = true;
+          break;
+        }
+      }
+      // Пропускаем если уже стоит нужный номер (защита от цикла с MutationObserver)
+      if (isPool && hrefDigits !== newPhoneDigits.replace(/[^\d]/g, "")) {
+        links[i].setAttribute("href", telHref);
+      }
+    }
+
+    // Обходим текстовые ноды и заменяем пул-номера в любом формате
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    var nodes = [];
+    var node;
+    while ((node = walker.nextNode())) {
+      if (!node.nodeValue) {
+        continue;
+      }
+      var hasPool = false;
+      for (var q = 0; q < POOL_REGEXES.length; q++) {
+        POOL_REGEXES[q].lastIndex = 0;
+        if (POOL_REGEXES[q].test(node.nodeValue)) {
+          hasPool = true;
+          break;
+        }
+      }
+      if (hasPool) {
+        nodes.push(node);
+      }
+    }
+    for (var j = 0; j < nodes.length; j++) {
+      var text = nodes[j].nodeValue;
+      // Пропускаем ноды которые уже содержат только новый номер (без изменений)
+      if (text === formatted) {
+        continue;
+      }
+      for (var r = 0; r < POOL_REGEXES.length; r++) {
+        POOL_REGEXES[r].lastIndex = 0;
+        text = text.replace(POOL_REGEXES[r], formatted);
+      }
+      nodes[j].nodeValue = text;
+    }
+    // Сбрасываем lastIndex у всех regex после прохода
+    for (var s = 0; s < POOL_REGEXES.length; s++) {
+      POOL_REGEXES[s].lastIndex = 0;
+    }
+  }
+
+  // Применяет все три метода подмены: по CSS-классу, плейсхолдерам и пул-номерам
   function applyAll(phone) {
     replacePhones(phone);
     replacePlaceholdersByText(phone);
+    replacePoolNumbers(phone);
   }
 
   // --- API ---
