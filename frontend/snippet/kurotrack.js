@@ -17,6 +17,9 @@
   var SELECTOR = script.getAttribute("data-selector") || ".kt-phone";
   var HEARTBEAT_INTERVAL = 30000; // 30 сек
 
+  // Регекс плейсхолдера: телефон-заглушка где все цифры = нули (Tilda-шаблоны)
+  var PLACEHOLDER_RE = /[+]?[78][\s\-]*\(?0{3}\)?[\s\-]*0{3}[\s\-]*0{2}[\s\-]*0{2}/g;
+
   if (!API_URL || !API_KEY) {
     console.error("[KuroTrack] data-api and data-key attributes required");
     return;
@@ -97,6 +100,50 @@
     return phone;
   }
 
+  // Fallback: подмена плейсхолдеров по тексту (для Tilda и других CMS без .kt-phone)
+  function replacePlaceholdersByText(newPhone) {
+    var formatted = formatPhone(newPhone);
+    var telHref = "tel:" + newPhone.replace(/[^+\d]/g, "");
+
+    // Заменяем href в <a tel:...> где номер состоит из нулей
+    var links = document.querySelectorAll("a[href^=\"tel:\"]");
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].getAttribute("href") || "";
+      // убираем нецифровые символы и проверяем что цифры — сплошные нули
+      var hrefDigits = href.replace(/[^\d]/g, "");
+      if (hrefDigits.length >= 7 && /^0+$/.test(hrefDigits)) {
+        links[i].setAttribute("href", telHref);
+      }
+    }
+
+    // Обходим текстовые ноды и заменяем плейсхолдеры
+    if (!document.body) {
+      return;
+    }
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    var nodes = [];
+    var node;
+    while ((node = walker.nextNode())) {
+      if (node.nodeValue) {
+        PLACEHOLDER_RE.lastIndex = 0;
+        if (PLACEHOLDER_RE.test(node.nodeValue)) {
+          nodes.push(node);
+        }
+      }
+    }
+    for (var j = 0; j < nodes.length; j++) {
+      PLACEHOLDER_RE.lastIndex = 0;
+      nodes[j].nodeValue = nodes[j].nodeValue.replace(PLACEHOLDER_RE, formatted);
+    }
+    PLACEHOLDER_RE.lastIndex = 0;
+  }
+
+  // Применяет оба метода подмены: по CSS-классу и по тексту-плейсхолдеру
+  function applyAll(phone) {
+    replacePhones(phone);
+    replacePlaceholdersByText(phone);
+  }
+
   // --- API ---
 
   function apiRequest(endpoint, data, callback) {
@@ -124,7 +171,10 @@
     // Проверяем кеш — если номер уже получен для этого визита
     var cached = sessionStorage.getItem("kt_phone");
     if (cached) {
-      replacePhones(cached);
+      applyAll(cached);
+      // Повтор через 1.5с и 3.5с: Tilda дорисовывает блоки асинхронно
+      setTimeout(function() { applyAll(cached); }, 1500);
+      setTimeout(function() { applyAll(cached); }, 3500);
       startHeartbeat(data.client_id);
       return;
     }
@@ -137,7 +187,10 @@
 
       sessionStorage.setItem("kt_phone", res.phone);
       sessionStorage.setItem("kt_session", res.session_id);
-      replacePhones(res.phone);
+      applyAll(res.phone);
+      // Повтор через 1.5с и 3.5с: Tilda дорисовывает блоки асинхронно
+      setTimeout(function() { applyAll(res.phone); }, 1500);
+      setTimeout(function() { applyAll(res.phone); }, 3500);
       startHeartbeat(res.session_id);
     });
   }
