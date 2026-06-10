@@ -7,10 +7,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.phone import normalize_phone
 from app.core.redis import get_redis
 from app.models.tracking_number import TrackingNumber
+from app.models.user import User
 from app.services.number_pool import NumberPoolManager
 
 router = APIRouter(prefix="/numbers", tags=["numbers"])
@@ -49,6 +51,7 @@ class BulkAddResponse(BaseModel):
 @router.post("/", response_model=NumberOut, status_code=201)
 async def add_number(
     body: NumberCreate,
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):
@@ -88,6 +91,7 @@ async def add_number(
 @router.post("/bulk", response_model=BulkAddResponse)
 async def bulk_add_numbers(
     body: BulkAddRequest,
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):
@@ -127,6 +131,7 @@ async def bulk_add_numbers(
 @router.get("/", response_model=list[NumberOut])
 async def list_numbers(
     project_id: str = Query(...),
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
 ):
     """Список всех номеров проекта."""
@@ -141,6 +146,7 @@ async def list_numbers(
 @router.delete("/{number_id}")
 async def delete_number(
     number_id: str,
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):

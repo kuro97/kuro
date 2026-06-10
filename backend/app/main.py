@@ -61,7 +61,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: ограничить доменами проектов в production
+    allow_origins=["https://kt.aiplus.kz"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,3 +77,15 @@ app.include_router(callback.router, prefix="/api/v1")
 app.include_router(amo_webhook.router, prefix="/api/v1")
 # Health endpoint вынесен в отдельный роутер для чистоты
 app.include_router(health_router.router, prefix="/api/v1")
+
+import psutil as _psutil
+_START_TIME = __import__('time').time()
+_PROC = _psutil.Process(__import__('os').getpid())
+
+@app.get("/health")
+async def simple_health():
+    return {
+        "status": "ok",
+        "rss_mb": _PROC.memory_info().rss // 1024 // 1024,
+        "uptime_s": int(__import__('time').time() - _START_TIME),
+    }

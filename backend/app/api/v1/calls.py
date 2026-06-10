@@ -10,9 +10,11 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, cast, Date, text, literal_column, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user
 from app.core.database import get_db, async_session
 from app.core.redis import redis_client
 from app.models.call import Call
+from app.models.user import User
 from app.schemas.tracking import CallOut, CallListResponse, CallStats, StatsResponse, SourceStats, CityStats, DayStats
 
 router = APIRouter(prefix="/calls", tags=["calls"])
@@ -60,6 +62,7 @@ async def list_calls(
     limit: int = Query(100, le=200),
     offset: int = Query(0),
     dedupe: bool = Query(True, description="True — один звонок на linkedid; False — все legs"),
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
 ):
     """Список звонков с фильтрацией и total count для пагинации.
@@ -118,6 +121,7 @@ async def list_unattributed(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     dedupe: bool = Query(True, description="True — один звонок на linkedid; False — все legs"),
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
 ):
     """Звонки без атрибуции (project_id IS NULL) — для оператора, чтобы вручную разобрать.
@@ -420,6 +424,7 @@ async def call_stats(
     project_id: str = Query(...),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
 ):
     """Агрегированная статистика по звонкам за период: KPI + по источникам + по городам + по дням.
@@ -541,6 +546,7 @@ class SourcePoint(BaseModel):
 async def daily_chart(
     project_id: str = Query(...),
     days: int = Query(30, le=365),
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
 ):
     """Звонки по дням за период — для графика на дашборде."""
@@ -575,6 +581,7 @@ async def daily_chart(
 async def sources_chart(
     project_id: str = Query(...),
     days: int = Query(30, le=365),
+    current_user: User = Depends(get_current_user),  # требуем JWT-авторизацию
     db: AsyncSession = Depends(get_db),
 ):
     """Звонки по источникам — для круговой диаграммы."""

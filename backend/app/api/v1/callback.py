@@ -1,6 +1,8 @@
 """API для callback-виджета (обратный звонок).
 Посетитель оставляет номер → система звонит менеджеру → соединяет с клиентом."""
 
+import logging
+
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
@@ -9,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.project import Project
 from app.services.ami_client import ami_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/callback", tags=["callback"])
 
@@ -56,5 +60,7 @@ async def request_callback(
             context="kurotrack-callback",
         )
         return CallbackResponse(ok=True, message="Callback initiated")
-    except Exception as e:
-        return CallbackResponse(ok=False, message=f"Failed to initiate callback: {e}")
+    except Exception:
+        # Логируем детали ошибки на сервере, клиенту возвращаем generic-сообщение
+        logger.exception("Callback initiation failed")
+        return CallbackResponse(ok=False, message="Не удалось инициировать звонок")
