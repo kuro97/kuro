@@ -10,6 +10,16 @@ import time
 import httpx
 
 from app.core.config import settings
+from app.core.amo_constants import (
+    FIELD_CITY,
+    FIELD_DEPARTMENT,
+    FIELD_UTM_SOURCE,
+    FIELD_UTM_MEDIUM,
+    FIELD_UTM_CAMPAIGN,
+    FIELD_UTM_CONTENT,
+    FIELD_UTM_TERM,
+    ENUM_DEPT_OFFLINE,
+)
 from app.models.call import Call
 
 logger = logging.getLogger(__name__)
@@ -69,7 +79,6 @@ _SOURCE_TO_CITY = {
     "taplink_aktobe":   "Актобе",
 }
 
-_FIELD_CITY_ID = 879211
 
 # Окно поиска свежего лида — 5 минут в секундах
 _RECENT_LEAD_WINDOW_SECONDS = 300
@@ -101,37 +110,37 @@ class AmoCRMClient:
             {"field_code": "UTM_REFERRER", "values": [{"value": "kurotrack"}]},
             # Поле "Отдел" в AMO (field_id=912857): Offline=914379, Online=914381.
             # Все звонковые лиды по определению offline (клиент позвонил сам).
-            {"field_id": 912857, "values": [{"enum_id": 914379}]},
+            {"field_id": FIELD_DEPARTMENT, "values": [{"enum_id": ENUM_DEPT_OFFLINE}]},
         ]
         if call.source:
             custom.append({"field_code": "UTM_SOURCE", "values": [{"value": call.source}]})
-            custom.append({"field_id": 869441, "values": [{"value": call.source}]})
+            custom.append({"field_id": FIELD_UTM_SOURCE, "values": [{"value": call.source}]})
         if call.medium:
             custom.append({"field_code": "UTM_MEDIUM", "values": [{"value": call.medium}]})
-            custom.append({"field_id": 869443, "values": [{"value": call.medium}]})
+            custom.append({"field_id": FIELD_UTM_MEDIUM, "values": [{"value": call.medium}]})
         if call.campaign:
             custom.append({"field_code": "UTM_CAMPAIGN", "values": [{"value": call.campaign}]})
-            custom.append({"field_id": 869445, "values": [{"value": call.campaign}]})
+            custom.append({"field_id": FIELD_UTM_CAMPAIGN, "values": [{"value": call.campaign}]})
         if call.keyword:
             custom.append({"field_code": "UTM_TERM", "values": [{"value": call.keyword}]})
-            custom.append({"field_id": 869449, "values": [{"value": call.keyword}]})
+            custom.append({"field_id": FIELD_UTM_TERM, "values": [{"value": call.keyword}]})
         if call.tracking_did:
             # DID кладём в UTM_CONTENT как "did:7004982670" — универсальный способ
             # пометить на какой номер был звонок без создания своего поля.
             did_value = f"did:{call.tracking_did}"
             custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
-            custom.append({"field_id": 869447, "values": [{"value": did_value}]})
+            custom.append({"field_id": FIELD_UTM_CONTENT, "values": [{"value": did_value}]})
         # Город: приоритет — явный 2GIS source. Иначе — пробуем достать из campaign.
         city_value: str | None = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
         if city_value:
             custom.append({
-                "field_id": _FIELD_CITY_ID,
+                "field_id": FIELD_CITY,
                 "values": [{"value": city_value}],
             })
         else:
             # site/insta/fb-без-кампании — оставляем поле пустым
             custom.append({
-                "field_id": _FIELD_CITY_ID,
+                "field_id": FIELD_CITY,
                 "values": None,
             })
         return custom
@@ -336,7 +345,7 @@ class AmoCRMClient:
                     try:
                         await client.patch(
                             f"{self._base_url()}/api/v4/leads/{lead_id}",
-                            json={"custom_fields_values": [{"field_id": _FIELD_CITY_ID, "values": None}]},
+                            json={"custom_fields_values": [{"field_id": FIELD_CITY, "values": None}]},
                             headers=self._headers(),
                         )
                     except Exception:

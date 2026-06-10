@@ -12,22 +12,23 @@ import httpx
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.amo_constants import STATUS_WON, STATUS_LOST, SORT_QUALIFIED, SORT_PAID
 from app.core.database import async_session
 from app.models.call import Call
 
 logger = logging.getLogger(__name__)
 
 # status_id = 142 — стандартный AMO "Успешно реализовано" (won)
-_AMO_STATUS_WON = 142
+_AMO_STATUS_WON = STATUS_WON
 
 # status_id = 143 — стандартный AMO "Закрыто и не реализовано" (не считается ни квалом, ни оплатой)
-_AMO_STATUS_LOST = 143
+_AMO_STATUS_LOST = STATUS_LOST
 
 # sort-порог начала квалификации (КВАЛИФИКАЦИЯ ПРОЙДЕНА и выше)
-_SORT_QUALIFIED = 80
+_SORT_QUALIFIED = SORT_QUALIFIED
 
 # sort-порог начала оплат (ПРЕДОПЛАТА получена №1 и выше)
-_SORT_PAID = 150
+_SORT_PAID = SORT_PAID
 
 # Имя кастомного поля города
 _FIELD_CITY = "Город"

@@ -13,6 +13,7 @@ sys.path.insert(0, "/home/alisher/kurotrack/backend")
 
 import httpx
 from app.core.config import settings
+from app.core.amo_constants import FIELD_CITY, ENUM_CITY_DRUGOY
 
 logging.basicConfig(
     filename="/tmp/kurotrack-cleanup.log",
@@ -21,7 +22,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("cleanup")
 
-FIELD_CITY = 879211
 GEO_SOURCES_PREFIXES = ("2gis_", "taplink_")
 
 
