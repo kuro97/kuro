@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -27,13 +28,23 @@ class Settings(BaseSettings):
     heartbeat_timeout: int = 60  # seconds without heartbeat = release number
 
     # AMO CRM (опционально — если пустые, интеграция отключена)
-    amo_subdomain: str = ""  # "qadam" → https://qadam.amocrm.ru
+    amo_subdomain: str = ""  # "qadam" -> https://qadam.amocrm.ru
     amo_token: str = ""  # long-lived access token
     amo_pipeline_id: int | None = None
     amo_responsible_user_id: int | None = None
     # Секрет для защиты webhook-эндпоинта. Пустой = защита выключена (для теста).
     # В проде задать в .env.worker: KURO_AMO_WEBHOOK_SECRET=<случайная строка>
     amo_webhook_secret: str = ""
+
+    @model_validator(mode="after")
+    def _check_secrets_in_prod(self):
+        # В production (debug=False) запрещаем дефолтные секреты-заглушки
+        if not self.debug:
+            if self.secret_key in ("change-me-in-production", "", "change-me"):
+                raise ValueError("KURO_SECRET_KEY не задан в production (.env) — дефолт-заглушка запрещена")
+            if self.ami_secret in ("change-me", ""):
+                raise ValueError("KURO_AMI_SECRET не задан в production (.env)")
+        return self
 
 
 settings = Settings()

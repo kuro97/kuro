@@ -11,6 +11,13 @@ from app.models.project import Project
 from app.models.tracking_number import TrackingNumber
 from app.services.number_pool import NumberPoolManager
 
+
+import os, sys
+
+# Защита от случайного запуска на проде — seed создаёт дефолтные пароли и демо-ключи
+if os.environ.get("KURO_ENV", "").lower() not in ("dev", "development", "local"):
+    sys.exit("seed.py запускается ТОЛЬКО в dev (выстави KURO_ENV=development). На проде запрещён.")
+
 # Демо-номера (фейковые — для тестирования без реальных SIP)
 DEMO_NUMBERS = [
     "+77001110001",

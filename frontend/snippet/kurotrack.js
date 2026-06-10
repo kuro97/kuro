@@ -16,6 +16,7 @@
   var API_KEY = script.getAttribute("data-key");
   var SELECTOR = script.getAttribute("data-selector") || ".kt-phone";
   var HEARTBEAT_INTERVAL = 30000; // 30 сек
+  var _heartbeatTimer = null;  // id таймера heartbeat — защита от дублей при двойном подключении скрипта
 
   // Регекс плейсхолдера: телефон-заглушка где все цифры = нули (Tilda-шаблоны)
   var PLACEHOLDER_RE = /[+]?[78][\s\-]*\(?0{3}\)?[\s\-]*0{3}[\s\-]*0{2}[\s\-]*0{2}/g;
@@ -283,7 +284,9 @@
   }
 
   function startHeartbeat(sessionId) {
-    setInterval(function () {
+    // Очищаем предыдущий таймер — защита от дублей при двойном подключении скрипта
+    if (_heartbeatTimer) { clearInterval(_heartbeatTimer); }
+    _heartbeatTimer = setInterval(function () {
       apiRequest("/tracking/heartbeat", { session_id: sessionId }, function () {});
     }, HEARTBEAT_INTERVAL);
   }

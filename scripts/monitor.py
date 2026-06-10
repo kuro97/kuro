@@ -37,11 +37,10 @@ def alert(msg: str):
 
 async def check_kurotrack_js():
     """1. kurotrack.js должен отдаваться 200 (иначе DNI не работает на сайтах)."""
-    import urllib.request, ssl
-    ctx = ssl._create_unverified_context()
+    import urllib.request
     try:
         req = urllib.request.Request("https://kt.aiplus.kz/kurotrack.js")
-        with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             body = r.read(200).decode("utf-8", errors="ignore")
             if r.status != 200 or "KuroTrack" not in body:
                 alert(f"kurotrack.js: HTTP {r.status}, контент не похож на JS")
@@ -51,11 +50,10 @@ async def check_kurotrack_js():
 
 async def check_api_health():
     """2. API /api/v1/health на воркере."""
-    import urllib.request, ssl
-    ctx = ssl._create_unverified_context()
+    import urllib.request
     try:
         req = urllib.request.Request("https://kt.aiplus.kz/api/v1/health")
-        with urllib.request.urlopen(req, timeout=5, context=ctx) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             if r.status != 200:
                 alert(f"API health: HTTP {r.status}")
     except Exception as e:
