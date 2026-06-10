@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import json
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -128,7 +128,7 @@ async def list_unattributed(
     dedupe=True (по умолчанию) — дедупликация по linkedid.
     dedupe=False — все сырые legs.
     """
-    since = datetime.utcnow() - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     base_conditions = [Call.project_id.is_(None), Call.started_at >= since]
 
     if dedupe:
@@ -550,7 +550,7 @@ async def daily_chart(
     db: AsyncSession = Depends(get_db),
 ):
     """Звонки по дням за период — для графика на дашборде."""
-    since = datetime.utcnow() - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     # Все звонки по дням
     query = (
@@ -585,7 +585,7 @@ async def sources_chart(
     db: AsyncSession = Depends(get_db),
 ):
     """Звонки по источникам — для круговой диаграммы."""
-    since = datetime.utcnow() - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     query = (
         select(

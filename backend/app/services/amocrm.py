@@ -15,6 +15,10 @@ from app.models.call import Call
 logger = logging.getLogger(__name__)
 
 
+class AmoAuthError(Exception):
+    """AMO вернул 401/403 — токен протух. Не создаём лид чтобы не плодить дубли."""
+
+
 # Извлечение города из UTM_CAMPAIGN. Маркетологи кодируют город суффиксом:
 #   traffic_mektep_alm, traffic_mektep_ast, Poisk_BIL_Astana и т.п.
 # Ключи — case-insensitive подстроки которые ищем в campaign.
@@ -143,6 +147,7 @@ class AmoCRMClient:
           - is_ours=True  — это наш kurotrack-лид (UTM_REFERRER=kurotrack)
           - is_ours=False — это лид от Asterisk-интеграции (без маркера)
           - (None, False) — ничего не нашлось
+        Бросает AmoAuthError при 401/403 — вызывающий код НЕ должен создавать лид.
         """
         # AMO query принимает номер без + (только цифры)
         phone_no_plus = caller.lstrip("+")
@@ -154,11 +159,35 @@ class AmoCRMClient:
                 params={"query": phone_no_plus, "limit": 20, "with": "contacts"},
                 headers=self._headers(),
             )
-            resp.raise_for_status()
+        except httpx.TimeoutException:
+            # Таймаут — сетевая проблема, не auth. Лучше создать дубль чем потерять лид.
+            logger.warning(
+                "AMO: таймаут при поиске лида caller=%s — создаём новый лид",
+                caller,
+            )
+            return (None, False)
         except Exception:
             logger.warning(
                 "AMO: ошибка поиска лида для caller=%s — создаём новый лид",
                 caller,
+            )
+            return (None, False)
+
+        # При 401/403 токен протух — дальнейшее создание лида породит дубли.
+        # Бросаем исключение чтобы вызывающий код прервал обработку.
+        if resp.status_code in (401, 403):
+            logger.error(
+                "AMO: ошибка авторизации (токен протух?) при поиске лида caller=%s status=%d — НЕ создаём лид",
+                caller, resp.status_code,
+            )
+            raise AmoAuthError(f"AMO auth failed: {resp.status_code}")
+
+        try:
+            resp.raise_for_status()
+        except Exception:
+            logger.warning(
+                "AMO: ошибка поиска лида для caller=%s status=%s — создаём новый лид",
+                caller, resp.status_code,
             )
             return (None, False)
 
@@ -208,6 +237,7 @@ class AmoCRMClient:
         4. Если ничего нет — создаём новый лид через /leads/complex.
 
         Возвращает lead_id или None при ошибке / отключённой интеграции.
+        При AmoAuthError (401/403) возвращает None и НЕ создаёт лид.
         """
         if not self._is_configured():
             logger.warning(
@@ -219,8 +249,18 @@ class AmoCRMClient:
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                # Ищем свежий лид по caller (за 5 минут)
-                existing_id, is_ours = await self._find_recent_lead_by_caller(client, caller)
+                # Ищем свежий лид по caller (за 5 минут).
+                # AmoAuthError пробрасывается наружу — поймаем ниже.
+                try:
+                    existing_id, is_ours = await self._find_recent_lead_by_caller(client, caller)
+                except AmoAuthError:
+                    # Токен протух — прерываем создание лида чтобы не плодить дубли.
+                    logger.error(
+                        "AMO CRM: прерываем create_lead_from_call из-за auth-ошибки "
+                        "(caller=%s uniqueid=%s) — обнови токен в настройках",
+                        caller, call.uniqueid,
+                    )
+                    return None
 
                 if existing_id and is_ours:
                     # Наш же лид от предыдущего leg-а — просто привязываем call, не создаём дубль
@@ -311,48 +351,6 @@ class AmoCRMClient:
                 caller, call.uniqueid,
             )
             return None
-
-    async def add_call_note(self, lead_id: int, call: Call) -> bool:
-        """Добавляет заметку о звонке к лиду в AMO CRM.
-
-        Возвращает True при успехе, False при ошибке.
-        """
-        if not self._is_configured():
-            return False
-
-        # call_status: 1 — отвечен, 4 — пропущен
-        call_status = 1 if call.disposition == "ANSWERED" else 4
-
-        note_body = {
-            "note_type": "call_in",
-            "params": {
-                "uniq": call.uniqueid,
-                "duration": call.billsec,
-                "source": call.tracking_did,
-                "phone": call.caller_number,
-                "call_status": call_status,
-            },
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(
-                    f"{self._base_url()}/api/v4/leads/{lead_id}/notes",
-                    json=[note_body],
-                    headers=self._headers(),
-                )
-                response.raise_for_status()
-                logger.info(
-                    "AMO CRM: добавлена заметка к лиду id=%s uniqueid=%s",
-                    lead_id, call.uniqueid,
-                )
-                return True
-        except Exception:
-            logger.exception(
-                "AMO CRM: ошибка добавления заметки к лиду id=%s uniqueid=%s",
-                lead_id, call.uniqueid,
-            )
-            return False
 
 
 # Глобальный инстанс — импортируется в call_processor

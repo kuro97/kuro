@@ -163,6 +163,12 @@ class AmoSyncService:
 
         Возвращает True если обновление прошло успешно, False — при ошибке
         или если интеграция не настроена.
+
+        Структура разделена на три фазы чтобы не держать DB-соединение
+        во время HTTP-запросов к AMO (timeout=10с × N запросов):
+          Фаза 1 — SELECT Call из БД (быстро, закрываем сессию).
+          Фаза 2 — HTTP к AMO: GET lead + GET statuses (медленно, без DB).
+          Фаза 3 — UPDATE Call в БД (быстро, закрываем сессию).
         """
         if not self._is_configured():
             logger.warning(
@@ -171,83 +177,106 @@ class AmoSyncService:
             )
             return False
 
-        # Шаг 1: находим Call с amo_lead_id == lead_id
+        # --- Фаза 1: читаем Call из БД, сразу освобождаем соединение ---
         async with async_session() as db:
             row = await db.execute(
                 select(Call).where(Call.amo_lead_id == lead_id).limit(1)
             )
             call = row.scalar_one_or_none()
+
+        if call is None:
+            logger.debug("sync_lead: Call с amo_lead_id=%d не найден в БД", lead_id)
+            return False
+
+        # --- Фаза 2: HTTP к AMO (DB-сессия закрыта) ---
+        # Все HTTP-запросы выполняются без открытого DB-коннекта.
+        # Это предотвращает исчерпание пула при polling 30-дневного окна.
+        pipeline_id: int | None = None
+        status_id: int | None = None
+        deal_amount: int | None = None
+        amo_city: str | None = None
+        qualified_field: str | None = None
+        sort: int | None = None
+        amo_qualified: bool = False
+        amo_won: bool = False
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{self._base_url()}/api/v4/leads/{lead_id}",
+                    headers=self._headers(),
+                    params={"with": "contacts"},
+                )
+
+                # 404 — лид удалён в AMO, не падаем
+                if resp.status_code == 404:
+                    logger.warning(
+                        "sync_lead: lead_id=%d не найден в AMO (404) — пропускаем", lead_id
+                    )
+                    return False
+
+                if resp.status_code != 200:
+                    logger.warning(
+                        "sync_lead: AMO вернул %d для lead_id=%d — пропускаем",
+                        resp.status_code, lead_id,
+                    )
+                    return False
+
+                try:
+                    lead_data = resp.json()
+                except Exception:
+                    logger.exception(
+                        "sync_lead: не удалось распарсить JSON ответа lead_id=%d", lead_id
+                    )
+                    return False
+
+                # pipeline_id, status_id — прямо в теле ответа
+                pipeline_id = lead_data.get("pipeline_id")
+                status_id = lead_data.get("status_id")
+
+                # amount (price) → amo_deal_amount
+                deal_amount = lead_data.get("price")
+
+                # amo_city — кастомное поле "Город".
+                # Если AMO вернул "Другой" (дефолт для site/insta и т.п.) — пишем None,
+                # чтобы на дашборде было "—" вместо бессмысленного "Другой".
+                amo_city = self._extract_custom_field(lead_data, _FIELD_CITY)
+                if amo_city and amo_city.strip() == "Другой":
+                    amo_city = None
+
+                # "Квалификация пройдена" — кастомное поле, по нему квал
+                qualified_field = self._extract_custom_field(
+                    lead_data, "Квалификация пройдена"
+                )
+
+                # Получаем sort статуса из кеша/API.
+                # _get_status_sort делает HTTP — вызываем здесь, в HTTP-фазе.
+                if pipeline_id is not None and status_id is not None:
+                    sort = await self._get_status_sort(client, pipeline_id, status_id)
+
+                # Вычисляем квал (по custom field) и оплату (по sort/status)
+                amo_qualified, amo_won = self._calc_qualified_won(
+                    status_id, sort, qualified_field
+                )
+
+        except Exception:
+            logger.exception("sync_lead: HTTP ошибка при запросе lead_id=%d", lead_id)
+            return False
+
+        # --- Фаза 3: обновляем Call в БД (новая сессия, HTTP уже закрыт) ---
+        async with async_session() as db:
+            # Перезагружаем Call в новой сессии (предыдущая сессия уже закрыта)
+            row = await db.execute(
+                select(Call).where(Call.amo_lead_id == lead_id).limit(1)
+            )
+            call = row.scalar_one_or_none()
             if call is None:
-                logger.debug("sync_lead: Call с amo_lead_id=%d не найден в БД", lead_id)
+                # Маловероятно, но защита от удаления между фазами
+                logger.warning(
+                    "sync_lead: Call с amo_lead_id=%d исчез из БД между фазами", lead_id
+                )
                 return False
 
-            # Шаг 2: запрашиваем лид из AMO (один клиент на все запросы в рамках sync_lead)
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(
-                        f"{self._base_url()}/api/v4/leads/{lead_id}",
-                        headers=self._headers(),
-                        params={"with": "contacts"},
-                    )
-
-                    # 404 — лид удалён в AMO, не падаем
-                    if resp.status_code == 404:
-                        logger.warning(
-                            "sync_lead: lead_id=%d не найден в AMO (404) — пропускаем", lead_id
-                        )
-                        return False
-
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "sync_lead: AMO вернул %d для lead_id=%d — пропускаем",
-                            resp.status_code, lead_id,
-                        )
-                        return False
-
-                    try:
-                        lead_data = resp.json()
-                    except Exception:
-                        logger.exception(
-                            "sync_lead: не удалось распарсить JSON ответа lead_id=%d", lead_id
-                        )
-                        return False
-
-                    # Шаг 3: извлекаем поля
-
-                    # pipeline_id, status_id — прямо в теле ответа
-                    pipeline_id: int | None = lead_data.get("pipeline_id")
-                    status_id: int | None = lead_data.get("status_id")
-
-                    # amount (price) → amo_deal_amount
-                    deal_amount: int | None = lead_data.get("price")
-
-                    # amo_city — кастомное поле "Город".
-                    # Если AMO вернул "Другой" (дефолт для site/insta и т.п.) — пишем None,
-                    # чтобы на дашборде было "—" вместо бессмысленного "Другой".
-                    amo_city = self._extract_custom_field(lead_data, _FIELD_CITY)
-                    if amo_city and amo_city.strip() == "Другой":
-                        amo_city = None
-
-                    # "Квалификация пройдена" — кастомное поле, по нему квал
-                    qualified_field = self._extract_custom_field(
-                        lead_data, "Квалификация пройдена"
-                    )
-
-                    # Шаг 4: получаем sort статуса из кеша/API
-                    sort: int | None = None
-                    if pipeline_id is not None and status_id is not None:
-                        sort = await self._get_status_sort(client, pipeline_id, status_id)
-
-                    # Шаг 5: вычисляем квал (по custom field) и оплату (по sort/status)
-                    amo_qualified, amo_won = self._calc_qualified_won(
-                        status_id, sort, qualified_field
-                    )
-
-            except Exception:
-                logger.exception("sync_lead: HTTP ошибка при запросе lead_id=%d", lead_id)
-                return False
-
-            # Шаг 6: обновляем Call
             call.amo_pipeline_id = pipeline_id
             call.amo_status_id = status_id
             call.amo_deal_amount = deal_amount

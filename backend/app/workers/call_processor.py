@@ -21,8 +21,6 @@ from app.services.call_quality import classify_call
 from app.services.recordings import recording_service
 from app.services.webhook import webhook_sender
 
-from sqlalchemy import select
-
 logger = logging.getLogger(__name__)
 
 # Кеш активных звонков (uniqueid → данные)
@@ -30,6 +28,18 @@ active_calls: dict[str, dict] = {}
 
 # Глобальный маппинг number → project_id (заполняется при pool sync)
 _number_project_cache: dict[str, str] = {}
+
+# Нормализация source: приводим кастомные значения utm_source
+# (которые маркетологи вводят в URL) к каноническим именам источников
+# чтобы фильтры/KPI не дробились.
+_SOURCE_ALIASES = {
+    "google_alish": "google_ads",
+    "google": "google_ads",
+    "google_cpc": "google_ads",
+    "fb": "facebook",
+    "fb_ads": "facebook",
+    "ig": "instagram",
+}
 
 
 async def _find_session_by_did(did_raw: str) -> tuple[dict | None, str | None]:
@@ -282,17 +292,7 @@ async def _handle_cdr(event: dict):
                     if tn_obj and tn_obj.source_label:
                         call.source = tn_obj.source_label
 
-            # Нормализация source: приводим кастомные значения utm_source
-            # (которые маркетологи вводят в URL) к каноническим именам
-            # источников чтобы фильтры/KPI не дробились.
-            _SOURCE_ALIASES = {
-                "google_alish": "google_ads",
-                "google": "google_ads",
-                "google_cpc": "google_ads",
-                "fb": "facebook",
-                "fb_ads": "facebook",
-                "ig": "instagram",
-            }
+            # Нормализация source через модульный словарь _SOURCE_ALIASES
             if call.source and call.source in _SOURCE_ALIASES:
                 call.source = _SOURCE_ALIASES[call.source]
             # Если кампания "traffic_mektep_*" — это FB Ads, переопределяем source.
@@ -435,7 +435,7 @@ async def _handle_cdr(event: dict):
 
                 except Exception:
                     logger.exception(
-                        "AMO CRM push failed for call uniqueid=%s", event.get("UniqueID")
+                        "AMO CRM push failed for call uniqueid=%s", uniqueid
                     )
                 finally:
                     if lock_acquired:
