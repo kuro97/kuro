@@ -17,12 +17,12 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 ALERTS = []
 TIMEZONE_OFFSET = 5  # Алматы = UTC+5
-EXPECTED_REGS = 19   # 18 наших (12 старых + 6 новых) + 1 транзит V3bpWiYJ
+EXPECTED_REGS = 18   # 17 наших (670 выведен из проекта 11.06) + 1 транзит V3bpWiYJ
 
 # Какие DID считаем "наши"
 OUR_DIDS = {
     # site/2gis/insta/fb — 12 старых
-    "7004982661","7004982667","7004982670","7004982671","7004982672",
+    "7004982661","7004982667","7004982671","7004982672",
     "7004982675","7004982680","7004982682","7004982683","7004982685",
     "7004982687","7004982690",
     # Taplink (5 городов) + Instagram bio — 6 новых
