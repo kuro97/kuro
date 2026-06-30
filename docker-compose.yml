@@ -29,6 +29,9 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    # ВНИМАНИЕ: для применения нужно пересоздать контейнер:
+    # docker compose up -d postgres (выполняет человек с docker-доступом)
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_DB: kurotrack
       POSTGRES_USER: kuro

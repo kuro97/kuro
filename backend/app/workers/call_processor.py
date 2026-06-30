@@ -21,6 +21,9 @@ from app.services.call_quality import classify_call
 from app.services.recordings import recording_service
 from app.services.webhook import webhook_sender
 
+# asyncpg исключения для retry-логики на TooManyConnections
+from asyncpg.exceptions import TooManyConnectionsError
+
 logger = logging.getLogger(__name__)
 
 # Кеш активных звонков (uniqueid → данные)
@@ -40,6 +43,9 @@ _SOURCE_ALIASES = {
     "fb_ads": "facebook",
     "ig": "instagram",
 }
+
+# Ограничиваем одновременную обработку CDR чтобы залп веток не выжрал весь пул
+_cdr_semaphore = asyncio.Semaphore(25)
 
 
 async def _find_session_by_did(did_raw: str) -> tuple[dict | None, str | None]:
@@ -75,7 +81,7 @@ async def process_call_event(event: dict):
     elif event_type == "hangup":
         await _handle_hangup(event)
     elif event_type == "cdr":
-        await _handle_cdr(event)
+        await _retry_handle_cdr(event)
 
 
 async def _handle_new_call(event: dict):
@@ -310,6 +316,33 @@ async def _push_to_amo(db, call: Call, src: str, uniqueid: str | None) -> None:
                 await redis_client.delete(lock_key)
             except Exception:
                 pass
+
+
+async def _retry_handle_cdr(event: dict, max_attempts: int = 3) -> None:
+    """Retry-обертка для _handle_cdr с backoff на TooManyConnectionsError.
+
+    Семафор ограничивает параллелизм: max 25 CDR одновременно.
+    Backoff: 1, 2, 4 сек между попытками.
+    """
+    async with _cdr_semaphore:
+        for attempt in range(max_attempts):
+            try:
+                await _handle_cdr(event)
+                return
+            except TooManyConnectionsError:
+                if attempt < max_attempts - 1:
+                    wait_secs = 2 ** attempt  # 1, 2, 4 сек
+                    logger.warning(
+                        "TooManyConnectionsError (attempt %d/%d), retry in %ds: uniqueid=%s",
+                        attempt + 1, max_attempts, wait_secs, event.get("uniqueid"),
+                    )
+                    await asyncio.sleep(wait_secs)
+                    continue
+                logger.error(
+                    "CDR dropped after %d attempts (pool exhausted): uniqueid=%s",
+                    max_attempts, event.get("uniqueid"),
+                )
+                raise
 
 
 async def _handle_cdr(event: dict):
