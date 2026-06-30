@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Cron: каждые 5 минут раздаёт зависшие kurotrack-лиды без города менеджерам.
+"""Cron: каждые 5 минут раздаёт ВСЕ застрявшие лиды (Sipuni, формы, kurotrack)
+на аккаунте-администраторе менеджерам round-robin.
 
 Логика:
-  - Берём kurotrack-лиды за последние 7 дней
-  - Фильтр: status_id=33378589 (НОВАЯ ЗАЯВКА), responsible=2275621 (admin),
-             поле Город пустое или «Другой», лид старше 10 минут (даём Salesbot время)
+  - Берём ВСЕ лиды воронки 3321094 в статусе НОВАЯ ЗАЯВКА за последние 7 дней
+  - Фильтр: responsible_user_id=2275621 (admin — биржа нераспределённых),
+             лид старше 15 минут (даём Salesbot время разобрать своё)
+  - НЕ трогаем лиды на других ответственных — у них уже есть менеджер
+  - НЕ проверяем город и источник — Sipuni/формы не имеют своей логики раздачи
   - Round-robin курсор хранится в Redis: ключ auto_assign:rr_cursor
   - Логи в /tmp/kurotrack-autoassign.log
 
@@ -17,7 +20,6 @@ sys.path.insert(0, "/home/alisher/kurotrack/backend")
 import httpx
 import redis.asyncio as aioredis
 from app.core.config import settings
-from app.core.amo_constants import FIELD_CITY, ENUM_CITY_DRUGOY, STATUS_LOST
 
 logging.basicConfig(
     filename="/tmp/kurotrack-autoassign.log",
@@ -30,10 +32,12 @@ log = logging.getLogger("autoassign")
 ADMIN_ID = 2275621
 # Статус «НОВАЯ ЗАЯВКА» — только такие лиды трогаем
 STATUS_NEW = 33378589
+# Воронка KuroTrack
+PIPELINE_ID = 3321094
 # Окно поиска — лиды за последние 7 дней
 WINDOW_DAYS = 7
-# Пауза перед назначением — даём Salesbot время отработать городские лиды
-MIN_AGE_SECONDS = 600  # 10 минут
+# Пауза перед назначением — даём Salesbot время отработать свежие лиды (15 минут)
+MIN_AGE_SECONDS = 900
 # Redis-ключ для хранения позиции round-robin между запусками
 REDIS_CURSOR_KEY = "auto_assign:rr_cursor"
 
@@ -99,8 +103,23 @@ async def set_rr_cursor(redis_client, cursor: int) -> None:
     await redis_client.set(REDIS_CURSOR_KEY, cursor)
 
 
+def get_lead_source(lead: dict) -> str:
+    """Определяем источник лида для лога (UTM_CONTENT или UTM_REFERRER или 'unknown')."""
+    for f in lead.get("custom_fields_values") or []:
+        fname = (f.get("field_name") or "").lower()
+        if "utm_content" in fname or "utm_referrer" in fname:
+            vals = f.get("values") or []
+            if vals:
+                return str(vals[0].get("value", ""))[:60]
+    return "unknown"
+
+
 async def fetch_leads(http_client, headers: dict, from_ts: int) -> list:
-    """Собираем все kurotrack-лиды постранично начиная с from_ts."""
+    """Собираем все лиды воронки PIPELINE_ID в статусе STATUS_NEW постранично.
+
+    Используем filter вместо query — так AMO отдаёт конкретный статус/воронку,
+    а не текстовый поиск. Это покрывает Sipuni, формы и kurotrack разом.
+    """
     leads = []
     page = 1
     while True:
@@ -109,9 +128,10 @@ async def fetch_leads(http_client, headers: dict, from_ts: int) -> list:
                 f"https://{settings.amo_subdomain}.amocrm.ru/api/v4/leads",
                 headers=headers,
                 params={
-                    "query": "kurotrack",
                     "limit": 250,
                     "page": page,
+                    "filter[statuses][0][pipeline_id]": PIPELINE_ID,
+                    "filter[statuses][0][status_id]": STATUS_NEW,
                     "filter[created_at][from]": from_ts,
                 },
             )
@@ -142,7 +162,7 @@ async def fetch_leads(http_client, headers: dict, from_ts: int) -> list:
 async def main():
     now_ts = int(datetime.datetime.utcnow().timestamp())
     from_ts = now_ts - WINDOW_DAYS * 86400  # за последние 7 дней
-    cutoff_ts = now_ts - MIN_AGE_SECONDS     # старше 10 минут
+    cutoff_ts = now_ts - MIN_AGE_SECONDS     # старше 15 минут
 
     h = {"Authorization": f"Bearer {settings.amo_token}", "Content-Type": "application/json"}
 
@@ -161,22 +181,13 @@ async def main():
                 # Только нераспределённые в статусе НОВАЯ ЗАЯВКА
                 if lead.get("status_id") != STATUS_NEW:
                     continue
+                # Только на аккаунте-бирже — не перехватываем чужих
                 if lead.get("responsible_user_id") != ADMIN_ID:
                     continue
-                # Даём Salesbot время — пропускаем свежие лиды
+                # Даём Salesbot время — пропускаем свежие лиды (<15 мин)
                 if lead.get("created_at", 0) > cutoff_ts:
                     continue
-                # Проверяем поле Город — НЕ трогаем лиды с заполненным городом
-                city_val = None
-                for f in lead.get("custom_fields_values") or []:
-                    if f.get("field_id") == FIELD_CITY:
-                        vals = f.get("values") or []
-                        if vals:
-                            city_val = vals[0].get("value")
-                # Лиды с городом (кроме «Другой») раздаёт Salesbot — пропускаем
-                if city_val is not None and city_val != "Другой":
-                    continue
-                to_assign.append(lead["id"])
+                to_assign.append(lead)
 
             if not to_assign:
                 # Молчим — нечего распределять
@@ -188,7 +199,9 @@ async def main():
             assigned_count = 0
             fail_count = 0
 
-            for lead_id in to_assign:
+            for lead in to_assign:
+                lead_id = lead["id"]
+                source = get_lead_source(lead)
                 mgr_id, mgr_name = MANAGERS[cursor % len(MANAGERS)]
                 cursor += 1
 
@@ -200,10 +213,14 @@ async def main():
                     )
                     if pr.status_code == 200:
                         assigned_count += 1
-                        log.info(f"assigned lead={lead_id} to={mgr_name}({mgr_id})")
+                        log.info(f"assigned lead={lead_id} to={mgr_name}({mgr_id}) source={source}")
                     else:
                         fail_count += 1
                         log.warning(f"PATCH lead={lead_id} HTTP {pr.status_code}: {pr.text[:100]}")
+                        # При ошибке 4xx — логируем и останавливаемся, не продолжаем вслепую
+                        if 400 <= pr.status_code < 500:
+                            log.error(f"Получена 4xx ошибка, прерываем раздачу. assigned={assigned_count}")
+                            break
                 except Exception as e:
                     fail_count += 1
                     log.error(f"PATCH lead={lead_id} exception={e}")
@@ -212,7 +229,7 @@ async def main():
             await set_rr_cursor(redis_client, cursor)
 
             if assigned_count > 0 or fail_count > 0:
-                log.info(f"=== run done: assigned={assigned_count} fail={fail_count} next_cursor={cursor} ===")
+                log.info(f"=== assigned {assigned_count} leads (fail={fail_count} next_cursor={cursor}) ===")
 
     finally:
         await redis_client.aclose()
