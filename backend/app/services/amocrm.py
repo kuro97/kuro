@@ -10,6 +10,7 @@ import time
 import httpx
 
 from app.core.config import settings
+from app.core.redis import redis_client
 from app.core.amo_constants import (
     FIELD_CITY,
     FIELD_DEPARTMENT,
@@ -83,6 +84,11 @@ _SOURCE_TO_CITY = {
 # Окно поиска свежего лида — 5 минут в секундах
 _RECENT_LEAD_WINDOW_SECONDS = 300
 
+# Round-robin города для лидов где город неизвестен (instagram/site/fb/tiktok).
+# Присваиваем по кругу чтобы Salesbot AMO распределял их по менеджерам всех городов.
+_ROUND_ROBIN_CITIES = ["Алматы", "Астана", "Шымкент", "Атырау", "Актобе"]
+_RR_CITY_REDIS_KEY = "rr_city_cursor"
+
 
 class AmoCRMClient:
     """Клиент для работы с AMO CRM API v4."""
@@ -99,11 +105,18 @@ class AmoCRMClient:
     def _is_configured(self) -> bool:
         return bool(settings.amo_subdomain and settings.amo_token)
 
-    def _build_custom_fields(self, call: Call, caller: str) -> list[dict]:
+    def _build_custom_fields(
+        self,
+        call: Call,
+        caller: str,
+        forced_city: str | None = None,
+    ) -> list[dict]:
         """Собирает список custom_fields_values для лида.
 
         Используется и при создании нового лида, и при PATCH существующего.
         Не включает контактные данные — только UTM/отдел/город.
+        forced_city — round-robin город (передаётся только при создании нового лида,
+        НЕ при PATCH дедупа чтобы не перетирать город у существующих лидов).
         """
         custom: list[dict] = [
             # Единый маркер всех лидов от KuroTrack — фильтр "все звонки".
@@ -130,20 +143,34 @@ class AmoCRMClient:
             did_value = f"did:{call.tracking_did}"
             custom.append({"field_code": "UTM_CONTENT", "values": [{"value": did_value}]})
             custom.append({"field_id": FIELD_UTM_CONTENT, "values": [{"value": did_value}]})
-        # Город: приоритет — явный 2GIS source. Иначе — пробуем достать из campaign.
+        # Город: приоритет — явный 2GIS/taplink source, затем campaign-токен.
+        # Если ничего не определено — используем round-robin город (только при создании нового лида).
         city_value: str | None = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
+        if not city_value and forced_city:
+            city_value = forced_city
         if city_value:
             custom.append({
                 "field_id": FIELD_CITY,
                 "values": [{"value": city_value}],
             })
         else:
-            # site/insta/fb-без-кампании — оставляем поле пустым
+            # PATCH существующего лида — не перетираем город, ставим None
             custom.append({
                 "field_id": FIELD_CITY,
                 "values": None,
             })
         return custom
+
+    async def _next_round_robin_city(self) -> str:
+        """Возвращает следующий город по кругу (атомарно через Redis INCR).
+        Используется когда город лида неизвестен (веб-каналы: instagram/site/fb/tiktok).
+        """
+        try:
+            n = await redis_client.incr(_RR_CITY_REDIS_KEY)
+            return _ROUND_ROBIN_CITIES[(n - 1) % len(_ROUND_ROBIN_CITIES)]
+        except Exception:
+            logger.exception("RR-город: ошибка Redis, ставим первый город по умолчанию")
+            return _ROUND_ROBIN_CITIES[0]
 
     async def _find_recent_lead_by_caller(
         self,
@@ -254,7 +281,9 @@ class AmoCRMClient:
             )
             return None
 
-        lead_custom = self._build_custom_fields(call, caller)
+        # Поля без round-robin города — используются в PATCH дедупа (Asterisk-лид).
+        # Round-robin добавляется позже только при создании нового лида (POST /leads/complex).
+        lead_custom_no_rr = self._build_custom_fields(call, caller)
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -280,8 +309,9 @@ class AmoCRMClient:
                     return existing_id
 
                 if existing_id and not is_ours:
-                    # Asterisk-овский лид — обновляем его нашими UTM/отдел/город
-                    patch_body: dict = {"custom_fields_values": lead_custom}
+                    # Asterisk-овский лид — обновляем его нашими UTM/отдел/город.
+                    # Round-robin город НЕ применяем — не перетираем город у существующего лида.
+                    patch_body: dict = {"custom_fields_values": lead_custom_no_rr}
                     if settings.amo_pipeline_id is not None:
                         patch_body["pipeline_id"] = settings.amo_pipeline_id
                     if settings.amo_responsible_user_id is not None:
@@ -299,7 +329,14 @@ class AmoCRMClient:
                     )
                     return existing_id
 
-                # Ничего не нашли — создаём новый лид через /leads/complex
+                # Ничего не нашли — создаём новый лид через /leads/complex.
+                # Если город неизвестен (instagram/site/fb/tiktok) — присваиваем по кругу
+                # чтобы Salesbot AMO мог распределить лид по менеджерам всех городов.
+                forced_city: str | None = None
+                if not (_SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)):
+                    forced_city = await self._next_round_robin_city()
+                lead_custom = self._build_custom_fields(call, caller, forced_city=forced_city)
+
                 lead_body: dict = {"name": f"Входящий звонок {caller}"}
                 if settings.amo_pipeline_id is not None:
                     lead_body["pipeline_id"] = settings.amo_pipeline_id
@@ -333,25 +370,9 @@ class AmoCRMClient:
                 # /leads/complex возвращает массив: [{"id": N, "contact_id": M, ...}]
                 lead_id: int = data[0]["id"]
                 logger.info(
-                    "AMO CRM: создан лид id=%s для caller=%s uniqueid=%s",
-                    lead_id, caller, call.uniqueid,
+                    "AMO CRM: создан лид id=%s для caller=%s uniqueid=%s city=%s",
+                    lead_id, caller, call.uniqueid, forced_city or "из source/campaign",
                 )
-
-                # AMO CRM при POST /leads/complex игнорирует values=null и подставляет
-                # дефолтный enum "Другой" для enum-полей. Исправляем явным PATCH после создания.
-                # PATCH с values=null корректно очищает поле — проверено на API v4.
-                city_value = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
-                if not city_value:
-                    try:
-                        await client.patch(
-                            f"{self._base_url()}/api/v4/leads/{lead_id}",
-                            json={"custom_fields_values": [{"field_id": FIELD_CITY, "values": None}]},
-                            headers=self._headers(),
-                        )
-                    except Exception:
-                        logger.exception(
-                            "AMO: ошибка очистки города у созданного лида id=%s", lead_id
-                        )
 
                 return lead_id
         except Exception:
