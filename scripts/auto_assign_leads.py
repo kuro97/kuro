@@ -2,7 +2,7 @@
 """Cron: каждые 5 минут раздаёт зависшие kurotrack-лиды без города менеджерам.
 
 Логика:
-  - Берём kurotrack-лиды за последние 3 дня
+  - Берём kurotrack-лиды за последние 7 дней
   - Фильтр: status_id=33378589 (НОВАЯ ЗАЯВКА), responsible=2275621 (admin),
              поле Город пустое или «Другой», лид старше 10 минут (даём Salesbot время)
   - Round-robin курсор хранится в Redis: ключ auto_assign:rr_cursor
@@ -30,8 +30,8 @@ log = logging.getLogger("autoassign")
 ADMIN_ID = 2275621
 # Статус «НОВАЯ ЗАЯВКА» — только такие лиды трогаем
 STATUS_NEW = 33378589
-# Окно поиска — лиды за последние 3 дня
-WINDOW_DAYS = 3
+# Окно поиска — лиды за последние 7 дней
+WINDOW_DAYS = 7
 # Пауза перед назначением — даём Salesbot время отработать городские лиды
 MIN_AGE_SECONDS = 600  # 10 минут
 # Redis-ключ для хранения позиции round-robin между запусками
@@ -141,7 +141,7 @@ async def fetch_leads(http_client, headers: dict, from_ts: int) -> list:
 
 async def main():
     now_ts = int(datetime.datetime.utcnow().timestamp())
-    from_ts = now_ts - WINDOW_DAYS * 86400  # за последние 3 дня
+    from_ts = now_ts - WINDOW_DAYS * 86400  # за последние 7 дней
     cutoff_ts = now_ts - MIN_AGE_SECONDS     # старше 10 минут
 
     h = {"Authorization": f"Bearer {settings.amo_token}", "Content-Type": "application/json"}
