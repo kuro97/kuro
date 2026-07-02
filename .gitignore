@@ -19,3 +19,6 @@ recordings/
 backend/asterisk/trunks.csv
 backend/asterisk/pjsip_custom.conf
 uv.lock
+
+# Локальные бэкап-файлы — не коммитим в репо
+*.bak*
