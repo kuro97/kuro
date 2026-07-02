@@ -382,6 +382,48 @@ class AmoCRMClient:
             )
             return None
 
+    async def add_call_note(self, lead_id: int, call: Call) -> bool:
+        """Добавляет заметку о звонке к лиду в AMO CRM.
+
+        Возвращает True при успехе, False при ошибке.
+        """
+        if not self._is_configured():
+            return False
+
+        # call_status: 1 — отвечен, 4 — пропущен
+        call_status = 1 if call.disposition == "ANSWERED" else 4
+
+        note_body = {
+            "note_type": "call_in",
+            "params": {
+                "uniq": call.uniqueid,
+                "duration": call.billsec,
+                "source": call.tracking_did,
+                "phone": call.caller_number,
+                "call_status": call_status,
+            },
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(
+                    f"{self._base_url()}/api/v4/leads/{lead_id}/notes",
+                    json=[note_body],
+                    headers=self._headers(),
+                )
+                response.raise_for_status()
+                logger.info(
+                    "AMO CRM: добавлена заметка к лиду id=%s uniqueid=%s",
+                    lead_id, call.uniqueid,
+                )
+                return True
+        except Exception:
+            logger.exception(
+                "AMO CRM: ошибка добавления заметки к лиду id=%s uniqueid=%s",
+                lead_id, call.uniqueid,
+            )
+            return False
+
 
 # Глобальный инстанс — импортируется в call_processor
 amocrm_client = AmoCRMClient()
