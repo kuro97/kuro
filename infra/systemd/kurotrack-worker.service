@@ -13,8 +13,8 @@ MemoryMax=700M
 ExecStart=/home/alisher/kurotrack/backend/venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 --port 8102 \
     --limit-max-requests 1000
-StandardOutput=journal
-StandardError=journal
+StandardOutput=append:/home/alisher/kurotrack/logs/worker.log
+StandardError=append:/home/alisher/kurotrack/logs/worker.log
 SyslogIdentifier=kurotrack-worker
 Restart=always
 RestartSec=3

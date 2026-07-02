@@ -138,7 +138,7 @@ async def check_recent_inbound(db: AsyncSession):
 
 async def check_worker_errors():
     """5. В логе worker не должно быть IntegrityError за последние 5 минут."""
-    log_path = "/tmp/kurotrack-worker.log"
+    log_path = "/home/alisher/kurotrack/logs/worker.log"
     if not os.path.exists(log_path):
         return
     try:
@@ -153,6 +153,31 @@ async def check_worker_errors():
             alert(f"Worker лог: {len(errs)} критических ошибок в последних 200 строках. Пример: {errs[0][:150]}")
     except Exception as e:
         print(f"check_worker_errors: не критично, но не смог прочитать лог: {e}")
+
+
+def trim_worker_log_if_huge(log_path: str, max_bytes: int = 50 * 1024 * 1024,
+                            keep_bytes: int = 20 * 1024 * 1024):
+    """Аварийный trim: если лог перерос max_bytes — усекаем до последних keep_bytes.
+
+    Страховка на случай, если logrotate не отработал. Читаем хвост keep_bytes и
+    перезаписываем файл им же. Без root, atomic через временный файл в той же папке.
+    """
+    try:
+        if not os.path.exists(log_path):
+            return
+        size = os.path.getsize(log_path)
+        if size <= max_bytes:
+            return
+        with open(log_path, "rb") as f:
+            f.seek(size - keep_bytes)
+            tail = f.read()
+        tmp_path = log_path + ".trim.tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(tail)
+        os.replace(tmp_path, log_path)
+        print(f"trim_worker_log: усечён {log_path} с {size} до ~{keep_bytes} байт", flush=True)
+    except Exception as e:
+        print(f"trim_worker_log: не критично, не смог усечь {log_path}: {e}")
 
 
 def send_telegram(text: str):
@@ -189,6 +214,7 @@ async def main():
     async with Sess() as db:
         await check_recent_inbound(db)
     await check_worker_errors()
+    trim_worker_log_if_huge("/home/alisher/kurotrack/logs/worker.log")
 
     await engine.dispose()
 
