@@ -6,6 +6,7 @@
 
 import logging
 import time
+import zlib
 
 import httpx
 
@@ -161,16 +162,26 @@ class AmoCRMClient:
             })
         return custom
 
-    async def _next_round_robin_city(self) -> str:
+    async def _next_round_robin_city(self, caller: str) -> str:
         """Возвращает следующий город по кругу (атомарно через Redis INCR).
+
         Используется когда город лида неизвестен (веб-каналы: instagram/site/fb/tiktok).
+        При сбое Redis — детерминированный fallback: crc32(caller) % N.
+        crc32 стабилен между процессами (в отличие от hash(), который рандомизирован
+        PYTHONHASHSEED), поэтому один и тот же номер всегда попадёт в один город,
+        а поток номеров равномерно разложится по всем 5 городам вместо «всё в Алматы».
         """
         try:
             n = await redis_client.incr(_RR_CITY_REDIS_KEY)
             return _ROUND_ROBIN_CITIES[(n - 1) % len(_ROUND_ROBIN_CITIES)]
         except Exception:
-            logger.exception("RR-город: ошибка Redis, ставим первый город по умолчанию")
-            return _ROUND_ROBIN_CITIES[0]
+            # Стабильный детерминированный разброс по caller при недоступном Redis.
+            idx = zlib.crc32((caller or "").encode("utf-8")) % len(_ROUND_ROBIN_CITIES)
+            logger.exception(
+                "RR-город: ошибка Redis, fallback по crc32(caller=%s) -> %s",
+                caller, _ROUND_ROBIN_CITIES[idx],
+            )
+            return _ROUND_ROBIN_CITIES[idx]
 
     async def _find_recent_lead_by_caller(
         self,
@@ -334,7 +345,7 @@ class AmoCRMClient:
                 # чтобы Salesbot AMO мог распределить лид по менеджерам всех городов.
                 forced_city: str | None = None
                 if not (_SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)):
-                    forced_city = await self._next_round_robin_city()
+                    forced_city = await self._next_round_robin_city(caller)
                 lead_custom = self._build_custom_fields(call, caller, forced_city=forced_city)
 
                 lead_body: dict = {"name": f"Входящий звонок {caller}"}
