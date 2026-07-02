@@ -2,9 +2,10 @@
 
 Используется двумя способами:
   1. Webhook (real-time): AMO шлёт POST при изменении лида → sync_lead(lead_id)
-  2. Polling (fallback): каждые 10 минут → sync_recent_leads(hours_back=24)
+  2. Polling (fallback): каждые 10 минут → sync_recent_leads(hours_back=4)
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -32,6 +33,13 @@ _SORT_PAID = SORT_PAID
 
 # Имя кастомного поля города
 _FIELD_CITY = "Город"
+
+# Ограничение параллелизма polling к AMO API. AMO лимит ~7 req/s.
+# Один sync_lead делает 1-2 HTTP-запроса (GET lead + опц. GET statuses),
+# поэтому 5 одновременных + пауза держат нас безопасно ниже лимита.
+_POLL_CONCURRENCY = 5
+# Пауза между запусками sync_lead после захвата слота семафора (сек).
+_POLL_PAUSE_SEC = 0.2
 
 
 class AmoSyncService:
@@ -295,10 +303,12 @@ class AmoSyncService:
         )
         return True
 
-    async def sync_recent_leads(self, hours_back: int = 24) -> int:
+    async def sync_recent_leads(self, hours_back: int = 4) -> int:
         """Берёт все Call.amo_lead_id за последние N часов и зовёт sync_lead для каждого.
 
-        Возвращает количество успешно обновлённых записей.
+        Параллелизм ограничен семафором _POLL_CONCURRENCY + пауза _POLL_PAUSE_SEC,
+        чтобы не превысить rate-limit AMO (~7 req/s). Возвращает число успешно
+        обновлённых записей.
         """
         if not self._is_configured():
             logger.warning(
@@ -320,14 +330,26 @@ class AmoSyncService:
         if not lead_ids:
             return 0
 
-        updated = 0
-        for lead_id in lead_ids:
-            try:
-                ok = await self.sync_lead(lead_id)
-                if ok:
-                    updated += 1
-            except Exception:
-                logger.exception("sync_recent_leads: ошибка при sync_lead(%d)", lead_id)
+        # Дедуп: один и тот же лид может быть у нескольких leg-звонков.
+        lead_ids = list(dict.fromkeys(lead_ids))
+
+        semaphore = asyncio.Semaphore(_POLL_CONCURRENCY)
+
+        async def _bounded_sync(lid: int) -> bool:
+            async with semaphore:
+                # Пауза внутри слота растягивает поток запросов под rate-limit.
+                await asyncio.sleep(_POLL_PAUSE_SEC)
+                try:
+                    return await self.sync_lead(lid)
+                except Exception:
+                    logger.exception("sync_recent_leads: ошибка при sync_lead(%d)", lid)
+                    return False
+
+        results = await asyncio.gather(
+            *[_bounded_sync(lid) for lid in lead_ids],
+            return_exceptions=False,
+        )
+        updated = sum(1 for r in results if r)
 
         return updated
 
