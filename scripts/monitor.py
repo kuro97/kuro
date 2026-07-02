@@ -60,49 +60,80 @@ async def check_api_health():
         alert(f"API недоступен: {e}")
 
 
-async def check_sip_registry():
-    """3. SIP registry должно быть >= EXPECTED_REGS."""
+async def _fetch_sip_registry():
+    """Один замер SIPshowregistry через AMI. Возвращает список зарегистрированных Username."""
     from panoramisk import Manager
+    mgr = Manager(
+        host=os.environ["KURO_AMI_HOST"],
+        port=int(os.environ.get("KURO_AMI_PORT","5038")),
+        username=os.environ["KURO_AMI_USERNAME"],
+        secret=os.environ.get("KURO_AMI_SECRET") or os.environ.get("KURO_AMI_PASSWORD"),
+    )
+    await mgr.connect()
+    r = await mgr.send_action({"Action": "SIPshowregistry"})
+    items = r if isinstance(r, list) else [r]
+    regs = []
+    for it in items:
+        d = dict(it.items()) if hasattr(it,"items") else it
+        if d.get("Event")=="RegistryEntry" or "Username" in d:
+            if d.get("State") == "Registered":
+                regs.append(d.get("Username"))
+    return regs
+
+
+async def check_sip_registry():
+    """3. SIP registry должно быть >= EXPECTED_REGS.
+
+    Транки Tele2 перерегистрируются каждые ~105с, поэтому единичный замер
+    иногда ловит долю секунды окна перерегистрации (ложный "пропал 1 номер").
+    Дебаунс: если недостача — делаем ещё 2 повторных замера с паузой 3с.
+    Алертим только если недостача одна и та же (тот же пропавший номер)
+    во всех трёх замерах подряд.
+    """
     try:
-        mgr = Manager(
-            host=os.environ["KURO_AMI_HOST"],
-            port=int(os.environ.get("KURO_AMI_PORT","5038")),
-            username=os.environ["KURO_AMI_USERNAME"],
-            secret=os.environ.get("KURO_AMI_SECRET") or os.environ.get("KURO_AMI_PASSWORD"),
-        )
-        await mgr.connect()
-        r = await mgr.send_action({"Action": "SIPshowregistry"})
-        items = r if isinstance(r, list) else [r]
-        regs = []
-        for it in items:
-            d = dict(it.items()) if hasattr(it,"items") else it
-            if d.get("Event")=="RegistryEntry" or "Username" in d:
-                if d.get("State") == "Registered":
-                    regs.append(d.get("Username"))
-        if len(regs) < EXPECTED_REGS:
-            missing = set([str(d) for d in OUR_DIDS]) - set(regs)
-            alert(f"SIP registry: {len(regs)}/{EXPECTED_REGS} зарегистрировано. "
-                  f"Пропали: {', '.join(sorted(missing))[:150]}")
+        regs = await _fetch_sip_registry()
+        if len(regs) >= EXPECTED_REGS:
+            return  # всё на месте, дебаунс не нужен
+
+        missing = set([str(d) for d in OUR_DIDS]) - set(regs)
+        for _ in range(2):
+            await asyncio.sleep(3)
+            regs_retry = await _fetch_sip_registry()
+            if len(regs_retry) >= EXPECTED_REGS:
+                return  # окно перерегистрации закрылось — не алёртим
+            missing_retry = set([str(d) for d in OUR_DIDS]) - set(regs_retry)
+            if missing_retry != missing:
+                return  # каждый раз пропадает разный номер — это шум перерегистрации
+            regs = regs_retry
+
+        alert(f"SIP registry: {len(regs)}/{EXPECTED_REGS} зарегистрировано (подтверждено 3 замерами). "
+              f"Пропали: {', '.join(sorted(missing))[:150]}")
     except Exception as e:
         alert(f"AMI/SIP registry проверить не смог: {e}")
 
 
 async def check_recent_inbound(db: AsyncSession):
-    """4. За последний час должны быть звонки на 7004982XXX (в рабочее время Алматы 9-21)."""
+    """4. За последние 4 часа должны быть звонки на наши tracking-номера
+    (окно расширено с 1ч до 4ч — при ~4 звонках/час 1-часовое окно часто
+    естественно пустое и даёт ложняк).
+    Алертим только в самое горячее рабочее время Алматы 12:00-20:00,
+    чтобы утренние часы 9-12 (ещё не начали звонить) не шумели.
+    """
     now_local = datetime.datetime.utcnow() + datetime.timedelta(hours=TIMEZONE_OFFSET)
     hour = now_local.hour
-    if hour < 9 or hour >= 21:
-        return  # ночь, не алёртим
+    if hour < 12 or hour >= 20:
+        return  # не пиковое рабочее время, не алёртим
 
     q = text("""
         SELECT COUNT(*) FROM calls
         WHERE tracking_did = ANY(:dids)
-          AND started_at >= NOW() - INTERVAL '1 hour'
+          AND started_at >= NOW() - INTERVAL '4 hours'
     """)
     res = await db.execute(q, {"dids": list(OUR_DIDS)})
     cnt = res.scalar() or 0
     if cnt == 0:
-        alert(f"0 inbound на 7004982XXX за последний час (сейчас {hour}:00 Алматы — рабочее время)")
+        alert(f"0 inbound на наши tracking-номера (700498XXX) за последние 4 часа "
+              f"(сейчас {hour}:00 Алматы — рабочее время)")
 
 
 async def check_worker_errors():
@@ -110,7 +141,6 @@ async def check_worker_errors():
     log_path = "/tmp/kurotrack-worker.log"
     if not os.path.exists(log_path):
         return
-    five_min_ago = datetime.datetime.now() - datetime.timedelta(minutes=5)
     try:
         st = os.stat(log_path)
         # tail последние 200 строк и ищем
@@ -122,7 +152,7 @@ async def check_worker_errors():
         if errs:
             alert(f"Worker лог: {len(errs)} критических ошибок в последних 200 строках. Пример: {errs[0][:150]}")
     except Exception as e:
-        pass  # не критично
+        print(f"check_worker_errors: не критично, но не смог прочитать лог: {e}")
 
 
 def send_telegram(text: str):
