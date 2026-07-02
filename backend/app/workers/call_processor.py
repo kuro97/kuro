@@ -21,8 +21,19 @@ from app.services.call_quality import classify_call
 from app.services.recordings import recording_service
 from app.services.webhook import webhook_sender
 
-# asyncpg исключения для retry-логики на TooManyConnections
-from asyncpg.exceptions import TooManyConnectionsError
+# Исключения БД для retry-логики: транзиентные сбои пула/соединения ретраим,
+# IntegrityError (дубль) — НЕТ.
+from asyncpg.exceptions import (
+    TooManyConnectionsError,
+    ConnectionDoesNotExistError,
+    PostgresConnectionError,
+)
+from sqlalchemy.exc import (
+    DBAPIError,
+    IntegrityError,
+    OperationalError,
+    TimeoutError as SATimeoutError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -250,12 +261,17 @@ async def _push_to_amo(db, call: Call, src: str, uniqueid: str | None) -> None:
         lock_acquired = await redis_client.set(lock_key, "1", nx=True, ex=60)
 
         if not lock_acquired:
-            # Другой leg держит lock прямо сейчас — ждём пока он создаст лид.
-            await asyncio.sleep(3)
-            # --- SQL-проверка после ожидания: должен уже быть лид ---
-            post_wait_lead_id = await _find_existing_lead_for_caller(
-                db, call.caller_number, call.id, window_minutes=30
-            )
+            # Другой leg держит lock прямо сейчас. Вместо слепого sleep(3) —
+            # короткий поллинг SQL 3×1с: как только сосед сохранит amo_lead_id,
+            # выходим раньше и не держим слот семафора зря.
+            post_wait_lead_id = None
+            for _ in range(3):
+                await asyncio.sleep(1)
+                post_wait_lead_id = await _find_existing_lead_for_caller(
+                    db, call.caller_number, call.id, window_minutes=30
+                )
+                if post_wait_lead_id:
+                    break
             if post_wait_lead_id:
                 call.amo_lead_id = post_wait_lead_id
                 await db.commit()
@@ -318,8 +334,40 @@ async def _push_to_amo(db, call: Call, src: str, uniqueid: str | None) -> None:
                 pass
 
 
+# Транзиентные исключения БД, которые имеет смысл ретраить.
+# ВАЖНО: IntegrityError сюда НЕ входит — дубль это норма, ретрай его не исправит.
+_RETRIABLE_DB_ERRORS: tuple[type[Exception], ...] = (
+    TooManyConnectionsError,
+    ConnectionDoesNotExistError,
+    PostgresConnectionError,
+    OperationalError,
+    SATimeoutError,
+)
+
+
+def _is_retriable_db_error(exc: Exception) -> bool:
+    """Транзиентный ли это сбой БД (стоит ретраить)?
+
+    IntegrityError (дубль) НЕ ретраим — сразу False, даже если он потомок DBAPIError.
+    Иначе проверяем сам exc и распакованный e.orig (asyncpg-исключение, обёрнутое
+    SQLAlchemy в DBAPIError/OperationalError).
+    """
+    if isinstance(exc, IntegrityError):
+        return False
+    if isinstance(exc, _RETRIABLE_DB_ERRORS):
+        return True
+    # SQLAlchemy оборачивает драйверные ошибки в DBAPIError, оригинал — в .orig
+    if isinstance(exc, DBAPIError) and exc.orig is not None:
+        return isinstance(exc.orig, _RETRIABLE_DB_ERRORS)
+    return False
+
+
 async def _retry_handle_cdr(event: dict, max_attempts: int = 3) -> None:
-    """Retry-обертка для _handle_cdr с backoff на TooManyConnectionsError.
+    """Retry-обёртка для _handle_cdr с backoff на транзиентных сбоях БД.
+
+    Ретраим: TooManyConnections, TimeoutError пула, OperationalError,
+    ConnectionDoesNotExist, PostgresConnectionError (в т.ч. обёрнутые в DBAPIError.orig).
+    НЕ ретраим: IntegrityError (дубль) и любые другие исключения — пробрасываем сразу.
 
     Семафор ограничивает параллелизм: max 25 CDR одновременно.
     Backoff: 1, 2, 4 сек между попытками.
@@ -329,18 +377,22 @@ async def _retry_handle_cdr(event: dict, max_attempts: int = 3) -> None:
             try:
                 await _handle_cdr(event)
                 return
-            except TooManyConnectionsError:
+            except Exception as exc:
+                # Нетранзиентная ошибка (в т.ч. IntegrityError) — не ретраим
+                if not _is_retriable_db_error(exc):
+                    raise
                 if attempt < max_attempts - 1:
                     wait_secs = 2 ** attempt  # 1, 2, 4 сек
                     logger.warning(
-                        "TooManyConnectionsError (attempt %d/%d), retry in %ds: uniqueid=%s",
-                        attempt + 1, max_attempts, wait_secs, event.get("uniqueid"),
+                        "Транзиентный сбой БД %s (попытка %d/%d), retry через %ds: uniqueid=%s",
+                        type(exc).__name__, attempt + 1, max_attempts, wait_secs,
+                        event.get("uniqueid"),
                     )
                     await asyncio.sleep(wait_secs)
                     continue
                 logger.error(
-                    "CDR dropped after %d attempts (pool exhausted): uniqueid=%s",
-                    max_attempts, event.get("uniqueid"),
+                    "CDR потерян после %d попыток (%s): uniqueid=%s",
+                    max_attempts, type(exc).__name__, event.get("uniqueid"),
                 )
                 raise
 
@@ -392,10 +444,35 @@ async def _handle_cdr(event: dict):
 
     if not call_lock_acquired:
         logger.info(
-            "call_lock: caller=%s уже обрабатывается другим leg-ом — ждём 3с", normalized_caller
+            "call_lock: caller=%s уже обрабатывается другим leg-ом — поллим до 3с",
+            normalized_caller,
         )
-        await asyncio.sleep(3)
-        # После паузы продолжаем — SQL pre-check найдёт лид от первого leg-а
+        # Вместо слепого sleep(3) — короткий поллинг: как только сосед-leg сохранит
+        # свою запись Call с этим caller_number, продолжаем. Раньше выходим — раньше
+        # освобождаем слот семафора. Держим слот максимум 3с (как было), но обычно меньше.
+        normalized_caller_search = normalized_caller
+        for _ in range(3):
+            await asyncio.sleep(1)
+            try:
+                async with async_session() as _poll_db:
+                    exists_row = await _poll_db.execute(
+                        select(Call.id)
+                        .where(Call.caller_number == src)
+                        .where(
+                            Call.started_at
+                            >= datetime.now(timezone.utc) - timedelta(minutes=30)
+                        )
+                        .limit(1)
+                    )
+                    if exists_row.scalar_one_or_none() is not None:
+                        break
+            except Exception:
+                # Поллинг — best-effort; ошибка чтения не должна прерывать обработку
+                logger.debug(
+                    "call_lock poll: ошибка проверки caller=%s (продолжаем ждать)",
+                    normalized_caller_search,
+                )
+        # После ожидания продолжаем — SQL pre-check в _push_to_amo найдёт лид от первого leg-а
 
     # 1. Ищем сессию по нормализованному DID в Redis
     try:
