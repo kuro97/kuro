@@ -40,7 +40,7 @@
 6. Webhook `/api/v1/amo/webhook` не менялся по контракту и остаётся основным каналом (проверяется существующими вызовами в коде).
 7. `KURO_ROLE` читается из ENV (дефолт `all`). При `KURO_ROLE=api` lifespan НЕ поднимает `ami_client`, `run_cleanup_loop`, `run_reconciliation_loop`, `run_amo_poll_loop`, `replay_pending_events`. При `KURO_ROLE=worker` lifespan поднимает всё перечисленное; роуты монтируются только `/health` и `/api/v1/health`. При `KURO_ROLE=all` — как сейчас (всё + все роуты).
 8. `GET /health` и `GET /api/v1/health` работают во ВСЕХ трёх ролях.
-9. Два systemd user-юнита готовы: `kurotrack-api.service` (порт 8103, `KURO_ROLE=api`, `--workers 2`) и обновлённый `kurotrack-worker.service` (порт 8102, `KURO_ROLE=worker`). nginx переключён на `127.0.0.1:8103` для `/api/` (после миграции).
+9. Два systemd user-юнита готовы: `kurotrack-api.service` (порт **8102**, `KURO_ROLE=api`, `--workers 1`, пул 8/12) и обновлённый `kurotrack-worker.service` (порт **8104**, `KURO_ROLE=worker`, пул 25/25). nginx **НЕ трогается** (нет root): api сел на уже-проксируемый 8102, worker уехал на 8104. Размеры пула БД заданы через ENV `KURO_DB_POOL_SIZE`/`KURO_DB_MAX_OVERFLOW`, суммарный максимум коннектов = 70 при `max_connections=100`.
 10. `bash scripts/smoke_test.sh` проходит (exit 0, 0 FAIL) после каждого шага миграции.
 11. Unit-тесты: журнал (INSERT pending → done), replay идемпотентен (не плодит звонки), ретеншн-запрос, `sync_recent_leads` не превышает лимит параллелизма. Все проходят.
 
@@ -208,7 +208,10 @@ class AmiEvent(Base):
 | `backend/app/models/__init__.py` | Добавить `AmiEvent` в импорты и `__all__` | L1-7 |
 | `backend/app/workers/amo_poll.py` | `_LOOKBACK_HOURS = 4` | L21 |
 | `backend/app/services/amo_sync.py` | `sync_recent_leads`: семафор + rate-limit пауза | L298-332 |
-| `infra/nginx/kurotrack.conf` | (только на шаге миграции П2.14) `proxy_pass` 8102 → 8103 в `location /api/`; `/healthz` оставить на воркере 8102 или тоже 8103 (см. §П2.14) | L34, L52 |
+| `backend/app/core/config.py` | (П2.14) Добавить `db_pool_size: int = 30` и `db_max_overflow: int = 40` в `Settings` (читаются как `KURO_DB_POOL_SIZE`/`KURO_DB_MAX_OVERFLOW`) | рядом с блоком PostgreSQL, ~L13 |
+| `backend/app/core/database.py` | (П2.14) `pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow` вместо литералов 30/40. Остальные параметры engine НЕ трогать | L11-12 |
+| `scripts/smoke_test.sh` | (П2.14) `WORKER_URL` c `127.0.0.1:8102` → `127.0.0.1:8104` (воркер переехал; публичный API через nginx остаётся 8102) | L35 |
+| `infra/nginx/kurotrack.conf` | **НЕ ТРОГАЕТСЯ** (нет root для reload). api-роль садится на уже-проксируемый 8102 — nginx работает без изменений (см. §П2.14) | — |
 
 ### Точная интеграция в `ami_client.py` (П2.13)
 
@@ -612,7 +615,7 @@ WHERE status='done' AND processed_at < now() - make_interval(days => :days)
 }
 ```
 
-`GET /api/v1/health` (роутер `health.py`) — контракт БЕЗ изменений (`HealthResponse`: status, service, ami_connected, db_ok, redis_ok). В роли `api` поле `ami_connected` будет `false` (AMI не поднят) — это ожидаемо, смоук проверяет `ami_connected` только для воркера через `127.0.0.1:8102`.
+`GET /api/v1/health` (роутер `health.py`) — контракт БЕЗ изменений (`HealthResponse`: status, service, ami_connected, db_ok, redis_ok). В роли `api` поле `ami_connected` будет `false` (AMI не поднят) — это ожидаемо, смоук проверяет `ami_connected` только для воркера через `127.0.0.1:8104` (после миграции П2.14). Публичный `/healthz` через nginx бьёт в api-процесс на 8102 и покажет `ami_connected:false` — это корректно (см. §П2.14, R7).
 
 Ошибки: без изменений. `/health` никогда не 5xx.
 
@@ -620,7 +623,7 @@ WHERE status='done' AND processed_at < now() - make_interval(days => :days)
 
 ## 7. Frontend Contract
 
-Изменений во фронтенде НЕТ. Дашборд обращается к тем же `/api/v1/*` эндпоинтам через nginx. После миграции П2.14 nginx проксирует `/api/` на api-процесс (8103) вместо воркера (8102) — для фронтенда прозрачно, URL не меняется.
+Изменений во фронтенде НЕТ. Дашборд обращается к тем же `/api/v1/*` эндпоинтам через nginx. После миграции П2.14 nginx **не меняется**: `/api/` по-прежнему идёт на `127.0.0.1:8102`, только теперь этот порт слушает выделенный api-процесс (роль `api`), а не монолит. Для фронтенда полностью прозрачно, URL не меняется.
 
 TypeScript-типы не затрагиваются.
 
@@ -692,17 +695,48 @@ asyncio_mode = "auto"
 
 ---
 
-## П2.14 — детальный план миграции прода (БЕЗ даунтайма приёма звонков)
+## П2.14 — детальный план миграции прода (БЕЗ даунтайма приёма звонков) — РЕВИЗИЯ 2026-07-02 под жёсткие прод-ограничения
 
-### Проблема
-Один процесс держит и HTTP-API дашборда, и AMI-обработку. Нельзя масштабировать API и нельзя рестартовать API-часть, не роняя приём звонков.
+> ⚠️ Эта версия ПОЛНОСТЬЮ заменяет предыдущий план П2.14. Изменения обязательны из-за прод-ограничений (проверено при разведке 2026-07-02, HEAD прода `04d57f5`).
 
-### Решение
-Роль через ENV. Прод разводим на два user-юнита: `kurotrack-worker.service` (8102, `KURO_ROLE=worker`, держит AMI+воркеры) и `kurotrack-api.service` (8103, `KURO_ROLE=api`, `--workers 2`, обслуживает дашборд). nginx `/api/` → 8103.
+### Прод-факты и ограничения (проверены на живом сервере)
+- **`SHOW max_connections;` на 127.0.0.1:5433 → `100`** (НЕ 200 как в docker-compose). Постгрес — в docker-контейнере, пересоздать/переконфигурировать его нельзя без root/docker. Значит `max_connections` остаётся **100** навсегда в рамках этой задачи.
+- **sudo/root НЕДОСТУПЕН вообще.** Следствия: nginx трогать нельзя (`nginx -t`/`reload` требуют root), системные сервисы не рестартить, постгрес-контейнер не пересоздавать. Работаем только `systemctl --user` под `alisher`.
+- Текущая загрузка БД в покое: `SELECT count(*) FROM pg_stat_activity WHERE datname='kurotrack'` ≈ **14** коннектов. Один процесс с пулом 70 (30+40) в пике доходил до ~70.
+- nginx уже проксирует `/api/` → `127.0.0.1:8102` и `/healthz` → `127.0.0.1:8102/api/v1/health`. **Не трогаем ни одну строку nginx.**
+- Пул БД сейчас **захардкожен** в `backend/app/core/database.py`: `pool_size=30, max_overflow=40` (итого 70). Не читается из ENV. Чтобы дать двум процессам разные пулы — ДЕЛАЕМ размеры пула ENV-управляемыми (см. §4, правка `config.py` + `database.py`).
+
+### Ключевое решение координатора (жёсткое, не обсуждается)
+1. **API остаётся на порту 8102.** nginx уже смотрит туда — не меняем nginx вообще (нет root для reload). Значит именно **api-роль** должна слушать 8102.
+2. **Worker уезжает на внутренний порт 8104** (публичный порт воркеру не нужен — nginx на него не ходит; 8104 нужен только для локального health-check воркера и смоука).
+3. **Итог по ролям:**
+   - `kurotrack-api.service` → порт **8102**, `KURO_ROLE=api`, обслуживает дашборд через уже настроенный nginx. `--workers 1` (обоснование ниже).
+   - `kurotrack-worker.service` → порт **8104**, `KURO_ROLE=worker`, держит AMI + все фоновые воркеры + replay журнала. Публично не виден.
+
+> Разворот портов относительно старого плана: раньше worker хотели оставить на 8102, а api вынести на 8103 и переключить nginx. Теперь nginx трогать НЕЛЬЗЯ (нет root), поэтому на «прибитый» к nginx порт 8102 садится тот, кто обслуживает публичный `/api/` — то есть api-роль. Worker переезжает на новый локальный 8104.
+
+### Пулы БД под лимит 100 (утверждено с корректировкой)
+Суммарный максимум коннектов обоих процессов должен быть ≤ 70 (тот же потолок, что у одного процесса сегодня), оставляя ~30 в резерве под сам постгрес, бэкапы (`pg_dump16`), psql-мониторинг и смоук.
+
+Предложение координатора: worker `pool_size=25, max_overflow=25` (=50), api `pool_size=8, max_overflow=12` (=20). Итого 70.
+
+**Критика (обязательная, CTO):**
+- **Проблема:** uvicorn с `--workers N` форкает **N отдельных ОС-процессов**, каждый импортирует `app.main` заново → каждый создаёт **свой** SQLAlchemy `engine` со своим пулом. То есть api с `--workers 2` дал бы `2 × (8+12) = 40` коннектов, а не 20. Тогда worker 50 + api 40 = **90** — впритык к 100, любой всплеск воркера + бэкап + мониторинг = `TooManyConnectionsError`. Это скрытая мина в исходном предложении.
+- **Решение:** api-роль запускаем **`--workers 1`** (один процесс). Дашборд смотрят 1-2 человека, read-only запросы лёгкие — одного uvicorn-воркера с пулом 20 более чем достаточно (async-конкурентность внутри одного процесса покрывает десятки одновременных запросов). Тогда api = ровно 8+12 = 20.
+- **Итог (утверждено):** worker `pool_size=25, max_overflow=25` (=50) + api `pool_size=8, max_overflow=12` (=20) при `--workers 1` = **максимум 70 коннектов**. В покое реально будет ~14-20. Резерв до `max_connections=100` — 30. Смоук-порог `>= 80` не достигается даже в пике.
+
+Значения задаются через ENV `KURO_DB_POOL_SIZE` / `KURO_DB_MAX_OVERFLOW`, выставляются в каждом systemd-юните через `Environment=` (см. §4 и юниты ниже). Дефолт в коде (если ENV не задан) — прежние 30/40 (=70), чтобы монолит `all` вёл себя как раньше.
+
+### Изменения по коду относительно предыдущей версии спеки
+Основной код П2.14 (`core/role.py`, условный lifespan и монтирование роутов в `main.py`, поле `role` в `/health`) — **без изменений**, см. §3 (`role.py`) и §4 (правка `main.py`). Дополнительно к §4 добавляются:
+- `backend/app/core/config.py` — две новые настройки `db_pool_size: int = 30`, `db_max_overflow: int = 40` (префикс `KURO_` уже есть → читаются как `KURO_DB_POOL_SIZE` / `KURO_DB_MAX_OVERFLOW`).
+- `backend/app/core/database.py` — `create_async_engine(... pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow, ...)` вместо литералов 30/40. Остальные параметры (pool_timeout, pre_ping, recycle, connect_args) НЕ трогать.
+
+> Файл-оунершип: обе правки (`config.py`, `database.py`) идут одной задачей `P2.14-db-pool-env` (owner `sonnet-backend`), см. §10. Они не пересекаются с `main.py`/`role.py` — можно параллельно в той же волне.
 
 ### systemd-юниты (текст готов к копипасту)
 
-`infra/systemd/kurotrack-worker.service` (обновлённый — добавлен `KURO_ROLE=worker`):
+`infra/systemd/kurotrack-worker.service` (обновлённый — `KURO_ROLE=worker`, порт **8104**, пул 25/25):
 
 ```ini
 [Unit]
@@ -714,11 +748,13 @@ Type=simple
 WorkingDirectory=/home/alisher/kurotrack/backend
 EnvironmentFile=/home/alisher/kurotrack/backend/.env.worker
 Environment=KURO_ROLE=worker
+Environment=KURO_DB_POOL_SIZE=25
+Environment=KURO_DB_MAX_OVERFLOW=25
 LimitNOFILE=65536
 MemoryHigh=500M
 MemoryMax=700M
 ExecStart=/home/alisher/kurotrack/backend/venv/bin/uvicorn app.main:app \
-    --host 127.0.0.1 --port 8102 \
+    --host 127.0.0.1 --port 8104 \
     --limit-max-requests 1000
 StandardOutput=append:/home/alisher/kurotrack/logs/worker.log
 StandardError=append:/home/alisher/kurotrack/logs/worker.log
@@ -730,7 +766,7 @@ RestartSec=3
 WantedBy=default.target
 ```
 
-`infra/systemd/kurotrack-api.service` (новый):
+`infra/systemd/kurotrack-api.service` (новый — `KURO_ROLE=api`, порт **8102**, `--workers 1`, пул 8/12):
 
 ```ini
 [Unit]
@@ -742,12 +778,14 @@ Type=simple
 WorkingDirectory=/home/alisher/kurotrack/backend
 EnvironmentFile=/home/alisher/kurotrack/backend/.env.worker
 Environment=KURO_ROLE=api
+Environment=KURO_DB_POOL_SIZE=8
+Environment=KURO_DB_MAX_OVERFLOW=12
 LimitNOFILE=65536
 MemoryHigh=400M
 MemoryMax=600M
 ExecStart=/home/alisher/kurotrack/backend/venv/bin/uvicorn app.main:app \
-    --host 127.0.0.1 --port 8103 \
-    --workers 2 --limit-max-requests 1000
+    --host 127.0.0.1 --port 8102 \
+    --workers 1 --limit-max-requests 1000
 StandardOutput=append:/home/alisher/kurotrack/logs/api.log
 StandardError=append:/home/alisher/kurotrack/logs/api.log
 SyslogIdentifier=kurotrack-api
@@ -758,68 +796,86 @@ RestartSec=3
 WantedBy=default.target
 ```
 
-> Оба используют один `.env.worker` (там DATABASE_URL/REDIS_URL/AMI/AMO). `KURO_ROLE` задан через `Environment=` в юните (переопределяет ENV из файла, если бы там был). Раздельные пулы БД получаются автоматически: это два разных процесса, каждый создаёт свой `engine` (pool_size=30+overflow=40). Итого при обоих запущенных: worker до 70 + api до 70 = 140 коннектов теоретический максимум. **Прод Postgres `max_connections`**: проверь перед выкатом (`SHOW max_connections;` на 5433). docker-compose ставит 200 — если прод так же, запас есть. Если меньше — уменьши `pool_size` api-юнита через отдельный ENV (out of scope, отметить в отчёте).
+> `--workers 1` в api-юните — ОСОЗНАННО (см. критику пулов выше): не менять на 2+, иначе каждый uvicorn-воркер создаст свой пул и суммарный лимит коннектов будет превышен. Горизонтальное масштабирование API (если когда-то понадобится) — отдельная задача с пересчётом пулов, здесь out of scope.
+>
+> Оба юнита используют один `.env.worker` (там DATABASE_URL/REDIS_URL/AMI/AMO — БЕЗ pool-переменных). Роль и размеры пула заданы через `Environment=` в самом юните и переопределяют что угодно из файла. Раздельные пулы получаются автоматически: это два разных процесса, engine создаётся при импорте с ENV-значениями своего юнита.
 
-### nginx (правка только на шаге 5 миграции)
+### nginx — НЕ ТРОГАЕМ (нет root)
 
-`infra/nginx/kurotrack.conf`:
-- L34: `proxy_pass http://127.0.0.1:8102;` → `proxy_pass http://127.0.0.1:8103;` (location `/api/`).
-- L52: `/healthz` → оставить на воркере `http://127.0.0.1:8102/api/v1/health` (чтобы healthz отражал состояние AMI/воркера, который критичнее). Не менять.
+`infra/nginx/kurotrack.conf` остаётся как есть: `/api/` → `127.0.0.1:8102`, `/healthz` → `127.0.0.1:8102/api/v1/health`. Никаких правок, никакого reload. Именно поэтому api-роль села на 8102 — чтобы nginx продолжал работать без изменений.
 
-Применение (требует root, делает админ — см. `infra/ADMIN-DEPLOY.md`): `sudo nginx -t && sudo systemctl reload nginx`. Если symlink — правка файла в репо + reload.
+> Последствие для `/healthz`: nginx-эндпоинт `/healthz` теперь отражает состояние **api-процесса** (8102), а не воркера. `HealthResponse.ami_connected` там будет `false` (AMI живёт в воркере). Это ОК: `/healthz` для nginx/uptime-мониторинга проверяет «жив ли публичный API дашборда» — а он живёт именно в api-процессе на 8102. Живость воркера и AMI проверяет смоук через `127.0.0.1:8104` (см. правку смоука ниже) и отдельный монитор из P2.13-followup.
+
+### Правка смоук-теста `scripts/smoke_test.sh` (обязательно в рамках П2.14)
+Смоук сейчас проверяет worker health через `WORKER_URL="http://127.0.0.1:8102"` и требует `ami_connected:true`. После миграции на 8102 будет api-роль (без AMI), а воркер — на 8104. Нужно:
+- L35: `WORKER_URL="http://127.0.0.1:8102"` → `WORKER_URL="http://127.0.0.1:8104"` (health/AMI-проверки секции B теперь ходят к воркеру на 8104).
+- Публичный API (секция D, `PUBLIC_URL=https://kt.aiplus.kz`) остаётся без изменений — он через nginx попадёт в api-процесс на 8102, `ami_connected` там не проверяется.
+- Порог `db connections >= 80` (L127) оставить как есть — при потолке 70 он не сработает, но служит ранним сигналом деградации.
+
+> Файл-оунершип смоука: правка идёт задачей `P2.14-ops-configs`, owner `sonnet-infra`. Файл `scripts/smoke_test.sh` не трогается никакой другой задачей.
 
 ### Пошаговый план выката (каждый шаг — с проверкой и откатом)
 
-> Все команды на проде под `alisher`, БЕЗ sudo (кроме nginx reload — эскалация к админу). Управление — `systemctl --user`.
+> Все команды на проде под `alisher`, БЕЗ sudo. Управление — `systemctl --user`. nginx НЕ трогаем ни на одном шаге.
 
 **Шаг 0 — подготовка (без влияния на прод).**
-- Смёржить код P2.13+P2.15+P2.14 в master, `git pull` на проде.
-- Накатить миграцию: `cd /home/alisher/kurotrack/backend && venv/bin/alembic upgrade head`.
-- Проверка: `venv/bin/alembic current` показывает `0006`. `psql ... -c "\d ami_events"` — таблица есть.
-- Откат: `venv/bin/alembic downgrade 0005` (дропнет пустую таблицу).
+- Код P2.13+P2.15 уже в master (HEAD `04d57f5`). Смёржить P2.14 (role-split + ENV-пулы + новые юниты + правка смоука) в master, `git pull` на проде.
+- Миграция `0006_ami_events` уже накачена в рамках P2.13 — новых миграций П2.14 не вводит. Проверка: `cd /home/alisher/kurotrack/backend && venv/bin/alembic current` → `0006`.
+- Проверить `max_connections`: `PGPASSWORD=... psql -h 127.0.0.1 -p 5433 -U kuro -d kurotrack -Atc "SHOW max_connections;"` → должно быть `100`. Зафиксировать текущее число коннектов: `... "SELECT count(*) FROM pg_stat_activity WHERE datname='kurotrack';"` (ожидаем ~14-20).
+- Откат этого шага: `git checkout <prev>` — кода на прод ещё не применяли (юниты не переставляли).
 
-**Шаг 1 — перезапустить существующий воркер в роли worker (журнал + новый lifespan, всё ещё один процесс отдаёт и API).**
-- Обновить юнит: скопировать `infra/systemd/kurotrack-worker.service` → `~/.config/systemd/user/kurotrack-worker.service`. **НО**: на этом шаге НЕ ставить `KURO_ROLE=worker` — оставить дефолт `all`, чтобы дашборд продолжал работать через 8102. То есть на шаге 1 применяем ТОЛЬКО код (журнал+lifespan), роль остаётся `all`. Для этого временно НЕ добавляй `Environment=KURO_ROLE=worker` (или задай `=all`).
+**Шаг 1 — перекатить код в текущем воркере, роль оставить `all` (пул тоже прежний 70).**
+- Цель шага: убедиться, что новый код (role.py + условный lifespan + ENV-пулы) работает в режиме полной обратной совместимости, НЕ меняя топологию (всё ещё один процесс на 8102, nginx доволен).
+- Обновить `~/.config/systemd/user/kurotrack-worker.service` из репо `infra/systemd/kurotrack-worker.service`, **НО** на этом шаге временно оставить старую конфигурацию: порт **8102**, БЕЗ `Environment=KURO_ROLE=worker` (или `=all`), БЕЗ pool-переменных (тогда дефолт 30/40=70). Проще: не переставлять юнит, а только `git pull` кода и `systemctl --user restart kurotrack-worker.service` — старый юнит запустит новый код в роли `all` на 8102.
+- Проверка: `curl -s 127.0.0.1:8102/health` → `{"status":"ok","role":"all",...}`. В логах при старте: `KuroTrack starting with KURO_ROLE=all` и `AMI journal replay: reprocessed N events`. Смоук на этом шаге запускать НЕ из master (там уже 8104) — проверяй health вручную: `curl -s 127.0.0.1:8102/api/v1/health` → `ami_connected:true`.
+- Приём звонков не прерывался (рестарт <5с, Asterisk держит TCP AMI, panoramisk переподключится; звонки в окно рестарта попадут в журнал `ami_events` при следующем событии — это уже работает с P2.13).
+- Откат: `git checkout <prev> && systemctl --user restart kurotrack-worker.service`. Журнал `ami_events` остаётся (старый код его не трогает — он появился в P2.13, уже в master).
+
+**Шаг 2 — развязка порта 8102: воркер съезжает на 8104, api занимает 8102.**
+
+Оба процесса не могут слушать 8102 одновременно, поэтому шаги 2a→2b идут подряд без пауз. Единственное окно недоступности ДАШБОРДА — секунды между 2a и 2b. Приём ЗВОНКОВ не страдает (AMI в воркере, который в окне уже поднят).
+
+**Шаг 2a — переставить воркер на 8104 в роль worker.**
+- Скопировать финальный `infra/systemd/kurotrack-worker.service` (порт 8104, `KURO_ROLE=worker`, пул 25/25) → `~/.config/systemd/user/kurotrack-worker.service`.
 - `systemctl --user daemon-reload && systemctl --user restart kurotrack-worker.service`.
-- Проверка: `curl -s 127.0.0.1:8102/health` → `role: all`. `bash scripts/smoke_test.sh` → 0 FAIL. В логах: `AMI journal replay: reprocessed N events` (может быть 0). Приём звонков не прерывался (рестарт <5с, Asterisk держит TCP AMI, panoramisk переподключится; звонки в момент рестарта — если были — попадут в журнал при следующем событии или потеряются только те, что пришли в окно рестарта — но это разовое окно, и оно уже было при любом прошлом рестарте).
-- Откат: `git checkout <prev> && restart`. Журнал остаётся (не мешает старому коду — старый код таблицу не трогает).
+- Проверка воркера: `curl -s 127.0.0.1:8104/health` → `{"role":"worker",...}`. `curl -s 127.0.0.1:8104/api/v1/health` → через ~2-5с `ami_connected:true`. `curl 127.0.0.1:8104/api/v1/calls/...` → 404 (бизнес-роуты сняты — ожидаемо). Логи: `KuroTrack starting with KURO_ROLE=worker`, `AMI journal replay: ...`.
 
-**Шаг 2 — поднять api-процесс на 8103 параллельно (nginx ещё на 8102).**
-- Скопировать `infra/systemd/kurotrack-api.service` → `~/.config/systemd/user/`.
+**Шаг 2b — сразу поднять api-процесс на 8102.**
+- Скопировать `infra/systemd/kurotrack-api.service` (порт 8102, `KURO_ROLE=api`, `--workers 1`, пул 8/12) → `~/.config/systemd/user/`.
 - `systemctl --user daemon-reload && systemctl --user enable --now kurotrack-api.service`.
-- Проверка: `curl -s 127.0.0.1:8103/health` → `role: api`. `curl -s 127.0.0.1:8103/api/v1/health` → JSON (`ami_connected:false` — норм для api). `curl "127.0.0.1:8103/api/v1/calls/?project_id=<id>&limit=1"` без токена → 401 (авторизация жива). `curl 127.0.0.1:8103/api/v1/projects` (с токеном) → данные.
-- Проверка пула БД: `psql ... -c "SELECT count(*) FROM pg_stat_activity WHERE datname='kurotrack';"` — должно быть < 80 (смоук порог). Если близко к лимиту — стоп, разбор.
-- Откат: `systemctl --user disable --now kurotrack-api.service`.
+- Проверка: `curl -s 127.0.0.1:8102/health` → `{"role":"api",...}`. `curl -s 127.0.0.1:8102/api/v1/health` → JSON (`ami_connected:false` — норм для api). `curl "127.0.0.1:8102/api/v1/calls/?project_id=<id>&limit=1"` без токена → 401. `curl https://kt.aiplus.kz/api/v1/health` (через nginx) → 200. Дашборд открывается.
+- Проверка пула БД: `psql ... "SELECT count(*) FROM pg_stat_activity WHERE datname='kurotrack';"` — должно быть заметно < 70 (реально ~20-40). Если ≥ 70 — стоп, разбор (возможна утечка коннектов или забыли ENV-пул).
 
-**Шаг 3 — переключить воркер в чистую роль worker (перестаёт отдавать бизнес-роуты).**
-- ВНИМАНИЕ: сначала должен быть готов шаг 4 (nginx на 8103), иначе дашборд отвалится. Поэтому шаг 3 и 4 делаем в связке, но nginx-reload — последним.
-- Обновить `~/.config/systemd/user/kurotrack-worker.service`: раскомментировать/добавить `Environment=KURO_ROLE=worker`.
-- **НЕ рестартить воркер, пока nginx смотрит на 8102** — иначе `/api/` через воркер начнёт отдавать 404. Порядок: сперва шаг 4 (nginx → 8103), затем рестарт воркера в роль worker.
+> Нулевое окно недоступности дашборда недостижимо без правки nginx (нет root): два процесса не сядут на 8102 одновременно. Дашборд-даунтайм в секунды приемлем (его смотрят 1-2 человека, не клиенты). Приём звонков — главная ценность — не страдает.
 
-**Шаг 4 — переключить nginx на api-процесс (8103).**
-- Правка `infra/nginx/kurotrack.conf` L34 → 8103 (см. выше). `/healthz` оставить 8102.
-- Эскалация админу (root): `sudo nginx -t && sudo systemctl reload nginx`.
-- Проверка: `curl -s https://kt.aiplus.kz/api/v1/health` → 200. Дашборд открывается. `curl https://kt.aiplus.kz/api/v1/calls/?...` без токена → 401.
-- Откат: вернуть L34 → 8102, `sudo systemctl reload nginx`.
-
-**Шаг 5 — рестарт воркера в роль worker (после того как nginx уже на 8103).**
-- `systemctl --user daemon-reload && systemctl --user restart kurotrack-worker.service`.
-- Проверка: `curl -s 127.0.0.1:8102/health` → `role: worker`. `curl 127.0.0.1:8102/api/v1/calls/...` → 404 (роуты сняты — ок). `curl 127.0.0.1:8102/api/v1/health` → 200 с `ami_connected:true` (после реконнекта AMI, ~2-5с). `bash scripts/smoke_test.sh` → 0 FAIL (смоук проверяет worker health на 8102 и public API на kt.aiplus.kz который теперь через 8103).
-- Проверка приёма звонков: в `logs/worker.log` появляются `CDR saved: ...`. В БД свежие звонки: `SELECT count(*) FROM calls WHERE started_at > now() - interval '10 min';`.
-- Откат (полный откат к монолиту): вернуть worker-юнит на `KURO_ROLE=all` (или убрать `Environment=`), nginx L34 → 8102, `systemctl --user disable --now kurotrack-api.service`, оба reload. Через 30с прод вернётся к исходному состоянию.
+**Шаг 3 — финальный смоук (уже с WORKER_URL=8104).**
+- В master уже лежит смоук с `WORKER_URL=http://127.0.0.1:8104` (правка внесена в рамках P2.14). `git pull` на проде был на шаге 0 → файл актуален.
+- `bash scripts/smoke_test.sh` → 0 FAIL. Секция B проверяет воркер на 8104 (`ami_connected:true`), секция D — публичный API через nginx (api-процесс на 8102).
+- Проверка приёма звонков: в `logs/worker.log` идут `CDR saved: ...`. `SELECT count(*) FROM calls WHERE started_at > now() - interval '10 min';` растёт.
 
 **Финальная проверка после всех шагов:**
 - `bash scripts/smoke_test.sh` → 0 FAIL.
+- `curl -s 127.0.0.1:8102/health` → `role: api`; `curl -s 127.0.0.1:8104/health` → `role: worker`.
+- Дашборд через `https://kt.aiplus.kz` открывается, данные грузятся.
 - 15 минут наблюдения `tail -f logs/worker.log` — `CDR saved` идут, `ami_connected:true`.
 - `SELECT count(*) FROM calls WHERE started_at > now() - interval '15 min';` растёт.
 - `SELECT status, count(*) FROM ami_events GROUP BY status;` — `done` растёт, `failed` ≈ 0.
+- `SELECT count(*) FROM pg_stat_activity WHERE datname='kurotrack';` < 70 (обычно ~20-40).
+
+**Полный откат к монолиту (в любой момент):**
+1. `systemctl --user disable --now kurotrack-api.service`.
+2. Вернуть `~/.config/systemd/user/kurotrack-worker.service` к старой версии: порт **8102**, роль `all` (убрать `Environment=KURO_ROLE=worker` и pool-переменные).
+3. `systemctl --user daemon-reload && systemctl --user restart kurotrack-worker.service`.
+- Через ~30с прод вернётся к исходному монолиту на 8102, nginx доволен (порт 8102 снова у процесса с бизнес-роутами). nginx не трогали ни на выкате, ни на откате.
 
 ### Риски П2.14 (самый инвазивный пункт)
-- **R1 — двойной пул БД исчерпает Postgres.** Митигация: проверить `max_connections` на 5433 перед шагом 2; смоук ловит `db connections >= 80`. Откат — disable api-юнит.
-- **R2 — nginx переключён раньше, чем api готов.** Митигация: строгий порядок шагов (api поднят и проверен на шаге 2 ДО nginx-reload на шаге 4).
-- **R3 — воркер в роли worker перестал отдавать `/api/`, а nginx ещё на 8102.** Митигация: шаг 5 (рестарт воркера в worker) строго ПОСЛЕ шага 4 (nginx→8103).
-- **R4 — callback-originate в api-роли даёт 503.** Митигация: known limitation, callback-трафик околонулевой; при необходимости callback-роут проксировать на воркер (out of scope).
+- **R1 — двойной пул БД исчерпает Postgres (`max_connections=100`).** Митигация: ENV-пулы 25/25 (worker) + 8/12 (api) = максимум 70; api строго `--workers 1` (иначе пул удваивается на процесс). Смоук ловит `db connections >= 80`. Откат — disable api-юнит, вернуть воркер в `all`.
+- **R2 — окно 502 на дашборде между шагами 2a и 2b (порт 8102 свободен).** Митигация: 2a и 2b выполняются подряд без пауз, окно — секунды; приём звонков не страдает (воркер уже поднят). Нулевое окно недостижимо без правки nginx (нет root).
+- **R3 — api с `--workers 2+` превысит лимит коннектов.** Митигация: юнит зафиксирован на `--workers 1`; в спеке явный запрет менять без пересчёта пулов.
+- **R4 — callback-originate в api-роли даёт 503** (`ami_client` не подключён в api). Митигация: known limitation, callback-трафик околонулевой; при необходимости callback проксировать на воркер 8104 (out of scope). Роут честно отдаёт 503, не молча падает.
 - **R5 — AMI-реконнект после рестарта воркера теряет звонки в окне рестарта.** Митигация: журнал P2.13 (событие пишется при получении); окно рестарта <5с, разовое.
+- **R6 — забыли ENV-пул → api взял дефолт 30/40, worker тоже.** Тогда суммарно 140 > 100 → `TooManyConnectionsError`. Митигация: `Environment=KURO_DB_POOL_SIZE/MAX_OVERFLOW` жёстко прописаны в ОБОИХ юнитах; проверка после шага 2b (`pg_stat_activity` < 70).
+- **R7 — `/healthz` через nginx теперь бьёт в api (8102), `ami_connected:false`.** Митигация: это ожидаемо и корректно (`/healthz` = «жив ли публичный API»). Живость воркера/AMI отслеживает смоук на 8104 + монитор P2.13-followup. Задокументировано.
 
 ---
 
@@ -852,7 +908,7 @@ WantedBy=default.target
 - pytest: `test_sync_recent_leads_dedups_and_limits` зелёный.
 
 ### П2.14
-- `curl 127.0.0.1:8102/health` → `role:worker`; `curl 127.0.0.1:8103/health` → `role:api`.
+- `curl 127.0.0.1:8102/health` → `role:api`; `curl 127.0.0.1:8104/health` → `role:worker`.
 - Дашборд через `https://kt.aiplus.kz` работает.
 - `bash scripts/smoke_test.sh` → 0 FAIL после КАЖДОГО шага миграции.
 - `SELECT count(*) FROM pg_stat_activity WHERE datname='kurotrack';` < 80.
@@ -863,8 +919,11 @@ WantedBy=default.target
 - Оптимизация массового replay (батчинг) при многочасовом даунтайме.
 - Проксирование callback-originate на воркер в api-роли.
 - Redis Streams (отклонён, см. обоснование).
-- Изменение `max_connections` Postgres (требует docker/root).
-- Тюнинг раздельных пулов БД под api/worker (отдельные ENV-переменные для pool_size).
+- Изменение `max_connections` Postgres (требует docker/root; остаётся 100).
+- Правка nginx / переключение портов через nginx (нет root; поэтому api сел на 8102).
+- Горизонтальное масштабирование api (`--workers 2+`) — требует пересчёта пулов под лимит 100 (сейчас зафиксировано `--workers 1`).
+
+> ВНИМАНИЕ: ENV-управляемые пулы БД (`KURO_DB_POOL_SIZE`/`KURO_DB_MAX_OVERFLOW`) и раздельные значения 25/25 (worker) + 8/12 (api) — теперь **В SCOPE** (задача `P2.14-db-pool-env`), в отличие от прошлой версии спеки.
 
 ---
 
@@ -887,7 +946,7 @@ WantedBy=default.target
       "risk": "Низкий: новая пустая таблица, IF NOT EXISTS идемпотентно. Не трогает существующие таблицы.",
       "estimated_turns": 15,
       "acceptance": ["alembic upgrade head проходит", "revision 0006 down_revision 0005", "частичный индекс на pending", "AmiEvent в Base.metadata"],
-      "status": "pending"
+      "status": "done"
     },
     {
       "id": "P2.13-journal-service",
@@ -899,7 +958,7 @@ WantedBy=default.target
       "risk": "Средний: параметризованный SQL через text(), JSONB CAST, идемпотентность replay. Не бросать при сбое БД в record_event.",
       "estimated_turns": 30,
       "acceptance": ["Только параметризованный SQL", "record_event не бросает при сбое БД (возврат None)", "replay сортирует по received_at ASC, attempts<5", "cleanup удаляет done старше 7 дней"],
-      "status": "pending"
+      "status": "done"
     },
     {
       "id": "P2.13-ami-integration",
@@ -911,7 +970,7 @@ WantedBy=default.target
       "risk": "Средний: точка входа всех событий. Ошибка ломает приём звонков. Journal — страховка, обработка не должна блокироваться при None event_id.",
       "estimated_turns": 20,
       "acceptance": ["event пишется в журнал ДО обработки", "handler-исключение → mark_failed", "успех → mark_done", "event_id None не ломает обработку"],
-      "status": "pending"
+      "status": "done"
     },
     {
       "id": "P2.15-amo-polling",
@@ -923,6 +982,18 @@ WantedBy=default.target
       "risk": "Низкий: изолированные файлы (amo_*), не пересекаются с ami_client/call_processor. Webhook — основной канал, не трогается.",
       "estimated_turns": 20,
       "acceptance": ["_LOOKBACK_HOURS=4", "параллелизм <=5 через семафор", "дедуп lead_ids", "пауза _POLL_PAUSE_SEC под rate-limit"],
+      "status": "done"
+    },
+    {
+      "id": "P2.14-db-pool-env",
+      "description": "ENV-управляемые размеры пула БД: config.py (db_pool_size/db_max_overflow) + database.py (pool_size/max_overflow из settings вместо литералов 30/40)",
+      "files": ["backend/app/core/config.py", "backend/app/core/database.py"],
+      "owner": "sonnet-backend-2",
+      "wave": 3,
+      "depends_on": [],
+      "risk": "Средний: меняет создание engine (глобальный ресурс). Дефолт 30/40=70 сохраняет поведение монолита. Раздельные пулы (25/25 worker, 8/12 api) задаются ENV в systemd-юнитах, не в коде.",
+      "estimated_turns": 15,
+      "acceptance": ["config.py: db_pool_size=30, db_max_overflow=40 (дефолт)", "database.py читает pool_size/max_overflow из settings", "прочие параметры engine (pool_timeout/pre_ping/recycle/connect_args) не тронуты", "без ENV поведение = прежнее 70"],
       "status": "pending"
     },
     {
@@ -938,19 +1009,19 @@ WantedBy=default.target
       "status": "pending"
     },
     {
-      "id": "P2.14-systemd-nginx",
-      "description": "systemd-юниты kurotrack-api/kurotrack-worker (эталонный текст в infra/systemd) + правка nginx proxy_pass на 8103 (применяется при миграции)",
+      "id": "P2.14-ops-configs",
+      "description": "systemd-юниты kurotrack-api (8102, role=api, --workers 1, пул 8/12) и kurotrack-worker (8104, role=worker, пул 25/25) с Environment=KURO_DB_POOL_SIZE/MAX_OVERFLOW + правка smoke_test.sh WORKER_URL 8102->8104. nginx НЕ трогается (нет root).",
       "files": [
         "infra/systemd/kurotrack-api.service",
         "infra/systemd/kurotrack-worker.service",
-        "infra/nginx/kurotrack.conf"
+        "scripts/smoke_test.sh"
       ],
       "owner": "sonnet-infra",
       "wave": 3,
-      "depends_on": ["P2.14-role-lifespan"],
-      "risk": "Средний: конфиги в репо (не применяются автоматически на прод). Реальный выкат — по пошаговому плану миграции человеком/деплоером. nginx-reload требует root (админ).",
+      "depends_on": ["P2.14-role-lifespan", "P2.14-db-pool-env"],
+      "risk": "Средний: конфиги в репо (не применяются автоматически на прод). Реальный выкат — по пошаговому плану миграции человеком. nginx НЕ трогаем — api сел на уже-проксируемый 8102. Забыть ENV-пул -> суммарно 140>100 коннектов (R6).",
       "estimated_turns": 15,
-      "acceptance": ["api-юнит порт 8103 role=api --workers 2", "worker-юнит порт 8102 role=worker", "nginx /api/ -> 8103, /healthz -> 8102"],
+      "acceptance": ["api-юнит: порт 8102, role=api, --workers 1, KURO_DB_POOL_SIZE=8 KURO_DB_MAX_OVERFLOW=12", "worker-юнит: порт 8104, role=worker, KURO_DB_POOL_SIZE=25 KURO_DB_MAX_OVERFLOW=25", "smoke_test.sh WORKER_URL=127.0.0.1:8104", "infra/nginx/kurotrack.conf НЕ изменён"],
       "status": "pending"
     },
     {
@@ -973,13 +1044,13 @@ WantedBy=default.target
 
 - **Wave 1 (фундамент, параллельно):** `P2.13-migration`, `P2.13-journal-service` (зависит от migration, но в той же волне последовательно — один owner `sonnet-backend`), `P2.15-amo-polling` (owner `sonnet-backend-2`, другие файлы: `amo_poll.py`+`amo_sync.py` — **не пересекаются** с `ami_client.py`/`call_processor.py`). Приоритет №1 — журнал: максимум надёжности при изолированном риске.
 - **Wave 2:** `P2.13-ami-integration` (`ami_client.py`) — зависит от сервиса журнала.
-- **Wave 3:** `P2.14-role-lifespan` (`main.py`+`role.py`) и `P2.14-systemd-nginx` (infra) — последний, самый инвазивный; зависит от стабильности журнала (worker-роль должна корректно поднимать replay).
+- **Wave 3:** `P2.14-db-pool-env` (`config.py`+`database.py`, owner `sonnet-backend-2`), `P2.14-role-lifespan` (`main.py`+`role.py`, owner `sonnet-backend`) и `P2.14-ops-configs` (`infra/systemd/*` + `scripts/smoke_test.sh`, owner `sonnet-infra`). Файлы не пересекаются между тремя owner'ами. `P2.14-ops-configs` зависит от обоих кодовых (юниты используют ENV-пулы и роли). nginx НЕ трогается.
 - **Wave 4:** `P2-tests` — после всего кода.
 
 ### File Ownership (нет конфликтов внутри волны)
 - Wave 1: `sonnet-backend` владеет `0006_*.py`, `ami_event.py`, `models/__init__.py`, `ami_journal.py`; `sonnet-backend-2` владеет `amo_poll.py`, `amo_sync.py`. Пересечений нет.
 - Wave 2: `sonnet-backend` — `ami_client.py`.
-- Wave 3: `sonnet-backend` — `main.py`, `role.py`; `sonnet-infra` — `infra/systemd/*`, `nginx`. Пересечений нет.
+- Wave 3: `sonnet-backend` — `main.py`, `role.py`; `sonnet-backend-2` — `core/config.py`, `core/database.py`; `sonnet-infra` — `infra/systemd/*`, `scripts/smoke_test.sh`. Пересечений нет (`config.py`/`database.py` не трогают `main.py`/`role.py`). `infra/nginx/kurotrack.conf` НЕ модифицируется ни одной задачей.
 - Wave 4: `sonnet-tester` — `test_ami_journal.py`, `pyproject.toml`.
 - `call_processor.py` НЕ модифицируется ни одной задачей (журнал ведёт ami_client; process_call_event уже идемпотентен) — исключает конфликт с P1-правками.
 ```
