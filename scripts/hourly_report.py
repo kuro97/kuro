@@ -188,6 +188,34 @@ async def check_db_connections(db: AsyncSession):
         add_line(f"⚠️ БД-соединения: не смог посчитать ({e})", False)
 
 
+async def check_journal(db: AsyncSession):
+    """7. Статистика журнала AMI-событий (ami_events) за последние сутки.
+
+    done/pending/failed за 24ч. failed>0 значит есть события, которые не
+    удалось реплеить (после 5 попыток) — звонок мог потеряться.
+    Небольшое число pending — норма (события в обработке прямо сейчас).
+    """
+    try:
+        q = text("""
+            SELECT status, count(*)
+            FROM ami_events
+            WHERE received_at > now() - interval '24 hours'
+            GROUP BY status
+        """)
+        rows = (await db.execute(q)).all()
+        counts = {row[0]: row[1] for row in rows}
+        done = counts.get("done", 0)
+        pending = counts.get("pending", 0)
+        failed = counts.get("failed", 0)
+
+        # ✅ если нет упавших и pending небольшой (в норме pending живёт секунды)
+        ok = failed == 0 and pending < 20
+        icon = "✅" if ok else "⚠️"
+        add_line(f"{icon} Журнал: done {done} · pending {pending} · failed {failed}", ok)
+    except Exception as e:
+        add_line(f"⚠️ Журнал: не смог посчитать ({e})", False)
+
+
 def send_telegram(msg: str) -> bool:
     """Шлёт сообщение в Telegram (как в monitor.py). Возвращает True если Telegram ответил ok."""
     token = os.environ.get("KURO_TG_BOT_TOKEN")
@@ -237,11 +265,12 @@ async def main():
     # 3. SIP-линии
     await check_sip(ami_ok)
 
-    # 4-6. Метрики из БД
+    # 4-7. Метрики из БД
     try:
         async with Sess() as db:
             await check_calls(db)
             await check_db_connections(db)
+            await check_journal(db)
     except Exception as e:
         add_line(f"⚠️ Не смог подключиться к БД для метрик: {e}", False)
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """KuroTrack health-monitor.
-Запускается из cron каждые 5 минут. Чек 5 пунктов, шлёт алёрт в Telegram
+Запускается из cron каждые 5 минут. Чек 6 пунктов, шлёт алёрт в Telegram
 если что-то не так. Молчит когда всё хорошо.
 
 Env (через .env.worker или .env.monitor):
@@ -136,6 +136,40 @@ async def check_recent_inbound(db: AsyncSession):
               f"(сейчас {hour}:00 Алматы — рабочее время)")
 
 
+async def check_journal_stuck(db: AsyncSession):
+    """6. Журнал AMI-событий (ami_events): не должно быть "застрявших" событий.
+
+    Застрявшие бывают двух видов:
+      - failed×5: событие пыталось реплеиться 5 раз (max attempts) и сдалось —
+        значит звонок обработать не удалось и молча потерян.
+      - pending>15мин: событие лежит в очереди дольше 15 минут — воркер завис
+        или не подхватывает журнал (в норме pending живёт секунды).
+    """
+    q = text("""
+        SELECT id, uniqueid, status, attempts
+        FROM ami_events
+        WHERE (status = 'failed' AND attempts >= 5)
+           OR (status = 'pending' AND received_at < now() - interval '15 minutes')
+        ORDER BY received_at
+        LIMIT 5
+    """)
+    rows = (await db.execute(q)).fetchall()
+    if not rows:
+        return
+
+    q_count = text("""
+        SELECT count(*)
+        FROM ami_events
+        WHERE (status = 'failed' AND attempts >= 5)
+           OR (status = 'pending' AND received_at < now() - interval '15 minutes')
+    """)
+    total = (await db.execute(q_count)).scalar() or 0
+
+    examples = ", ".join(str(r.uniqueid or f"id={r.id}") for r in rows)
+    alert(f"Журнал: {total} событий застряли (failed×5 или pending>15мин) — "
+          f"звонки могут быть потеряны, uniqueid: {examples}")
+
+
 async def check_worker_errors():
     """5. В логе worker не должно быть IntegrityError за последние 5 минут."""
     log_path = "/home/alisher/kurotrack/logs/worker.log"
@@ -213,6 +247,7 @@ async def main():
     await check_sip_registry()
     async with Sess() as db:
         await check_recent_inbound(db)
+        await check_journal_stuck(db)
     await check_worker_errors()
     trim_worker_log_if_huge("/home/alisher/kurotrack/logs/worker.log")
 
