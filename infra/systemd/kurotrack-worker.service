@@ -1,0 +1,23 @@
+[Unit]
+Description=KuroTrack AMI Worker (uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alisher/kurotrack/backend
+EnvironmentFile=/home/alisher/kurotrack/backend/.env.worker
+LimitNOFILE=65536
+# Safety net: soft-лимит поджимает кэши, hard убивает+рестарт (Restart=always)
+MemoryHigh=500M
+MemoryMax=700M
+ExecStart=/home/alisher/kurotrack/backend/venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8102 \
+    --limit-max-requests 1000
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kurotrack-worker
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
