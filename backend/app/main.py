@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.services.ami_client import ami_client
 from app.services.webhook import webhook_sender
 from app.services.pool_sync import sync_pool_from_db
+from app.services import ami_journal
 from app.workers.call_processor import process_call_event
 from app.workers.number_cleanup import run_cleanup_loop
 from app.workers.reconciliation import run_reconciliation_loop
@@ -33,6 +34,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Failed to sync number pool from DB — pool may be empty")
 
+    # REPLAY: переобрабатываем зависшие AMI-события (защита от потери звонков
+    # при рестарте/краше между приёмом Cdr и commit). Идемпотентно — дубли
+    # звонков/лидов не создаются (дедуп по calls.uniqueid и AMO-дедуп).
+    try:
+        replayed = await ami_journal.replay_pending_events(process_call_event)
+        if replayed:
+            logger.info("AMI journal replay: reprocessed %d events", replayed)
+    except Exception:
+        logger.exception("AMI journal replay failed")
+
     # Запуск фонового worker для очистки просроченных сессий
     cleanup_task = asyncio.create_task(run_cleanup_loop())
 
@@ -42,12 +53,16 @@ async def lifespan(app: FastAPI):
     # Запуск AMO poll worker: страховочная синхронизация лидов каждые 10 минут
     amo_poll_task = asyncio.create_task(run_amo_poll_loop())
 
+    # Запуск ретеншна журнала AMI-событий: чистит done-события старше 7 дней раз в час
+    journal_cleanup_task = asyncio.create_task(ami_journal.run_journal_cleanup_loop())
+
     yield
 
     # Shutdown: останавливаем reconnect-цикл и закрываем соединения
     cleanup_task.cancel()
     reconciliation_task.cancel()
     amo_poll_task.cancel()
+    journal_cleanup_task.cancel()
     await ami_client.disconnect()
     await webhook_sender.close()
 

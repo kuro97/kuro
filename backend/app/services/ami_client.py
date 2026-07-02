@@ -14,6 +14,7 @@ from app.core.database import async_session
 from app.core.phone import normalize_phone
 from app.core.redis import redis_client
 from app.models.tracking_number import TrackingNumber
+from app.services import ami_journal
 
 logger = logging.getLogger(__name__)
 
@@ -201,11 +202,7 @@ class AMIClient:
             "exten": exten,
             "context": context,
         }
-        for handler in self._call_handlers:
-            try:
-                await handler(event_data)
-            except Exception:
-                logger.exception("Ошибка в обработчике события звонка")
+        await self._dispatch_with_journal(event_data)
 
     async def _handle_hangup(self, manager, message):
         """Завершение звонка."""
@@ -216,11 +213,7 @@ class AMIClient:
             "cause": message.get("Cause"),
             "cause_txt": message.get("Cause-txt"),
         }
-        for handler in self._call_handlers:
-            try:
-                await handler(event_data)
-            except Exception:
-                logger.exception("Ошибка в обработчике события звонка")
+        await self._dispatch_with_journal(event_data)
 
     async def _handle_cdr(self, manager, message):
         """CDR — полная запись о звонке после завершения.
@@ -254,11 +247,32 @@ class AMIClient:
             # DID входящего звонка — пробрасывается через Set(CDR(userfield)=${EXTEN}) в dialplan
             "user_field": message.get("UserField"),
         }
+        await self._dispatch_with_journal(event_data)
+
+    async def _dispatch_with_journal(self, event_data: dict) -> None:
+        """Пишет событие в журнал, затем прогоняет через все хендлеры.
+
+        Порядок: INSERT pending → handler(event_data) → mark_done.
+        Если handler бросил — mark_failed (событие переобработается при старте).
+        Журнал — страховка: если record_event вернул None (сбой БД), обработка
+        всё равно идёт, просто без страховки для этого события.
+        """
+        event_id = await ami_journal.record_event(event_data)
+        ok = True
         for handler in self._call_handlers:
             try:
                 await handler(event_data)
             except Exception:
+                ok = False
                 logger.exception("Ошибка в обработчике события звонка")
+        if event_id is not None:
+            try:
+                if ok:
+                    await ami_journal.mark_done(event_id)
+                else:
+                    await ami_journal.mark_failed(event_id, "handler raised")
+            except Exception:
+                logger.exception("Не удалось обновить статус события журнала id=%s", event_id)
 
     async def disconnect(self):
         """Останавливает reconnect-цикл и закрывает соединение с AMI."""

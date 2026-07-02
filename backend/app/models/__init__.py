@@ -3,5 +3,6 @@ from app.models.tracking_number import TrackingNumber
 from app.models.call import Call
 from app.models.session import VisitorSession
 from app.models.user import User
+from app.models.ami_event import AmiEvent
 
-__all__ = ["Project", "TrackingNumber", "Call", "VisitorSession", "User"]
+__all__ = ["Project", "TrackingNumber", "Call", "VisitorSession", "User", "AmiEvent"]
