@@ -210,8 +210,16 @@ async def check_journal(db: AsyncSession):
 
         # ✅ если нет упавших и pending небольшой (в норме pending живёт секунды)
         ok = failed == 0 and pending < 20
-        icon = "✅" if ok else "⚠️"
-        add_line(f"{icon} Журнал: done {done} · pending {pending} · failed {failed}", ok)
+        if ok:
+            # Пользователю важно только "потерь нет" — сырое число done (события
+            # телефонии, их в разы больше чем звонков) только путает, показываем
+            # его мелко и вторым планом, а не как главную цифру строки
+            add_line(f"✅ Журнал звонков: без потерь (обработано {done} событий за сутки)", True)
+        else:
+            # Проблема — считаем именно застрявшие (failed + большой pending),
+            # а не общий объём: это число реально говорит о риске потери звонка
+            stuck = failed + pending
+            add_line(f"⚠️ Журнал звонков: {stuck} событий застряли — риск потери звонка (failed {failed}, pending {pending})", False)
     except Exception as e:
         add_line(f"⚠️ Журнал: не смог посчитать ({e})", False)
 
