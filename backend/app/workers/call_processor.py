@@ -155,7 +155,7 @@ async def _resolve_did(
     3. user_field — Set(CDR(userfield)=...) из dialplan (fallback, на будущее)
     4. dst — последняя надежда (extension менеджера, обычно не DID)
 
-    Чистит Redis-ключи сразу после чтения чтобы не засорять память.
+    Ключи Redis не удаляются (см. комментарий ниже) — истекают сами по TTL.
     Возвращает did_raw или None.
     """
     redis_did: str | None = None
@@ -167,14 +167,10 @@ async def _resolve_did(
     except Exception:
         logger.exception("Ошибка чтения inbound_did из Redis: uniqueid=%s", uniqueid)
 
-    # Чистим Redis-ключи сразу после чтения, чтобы не засорять
-    if redis_did and uniqueid:
-        try:
-            await redis_client.delete(f"inbound_did:{uniqueid}")
-            if linkedid:
-                await redis_client.delete(f"inbound_did:{linkedid}")
-        except Exception:
-            logger.exception("Ошибка удаления inbound_did из Redis: uniqueid=%s", uniqueid)
+    # НЕ удаляем ключи после чтения: при multi-leg звонках (Ring Group 6001)
+    # параллельный Local-leg читал ключ по linkedid первым и удалял его —
+    # главный входящий CDR оставался без DID (терялась атрибуция 2ГИС-Астаны).
+    # Ключи умирают сами по TTL 7200с — ранняя чистка не нужна.
 
     return redis_did or user_field or dst
 
