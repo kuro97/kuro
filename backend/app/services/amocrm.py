@@ -12,6 +12,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.redis import redis_client
+from app.core.phone import normalize_phone
 from app.core.amo_constants import (
     FIELD_CITY,
     FIELD_DEPARTMENT,
@@ -21,6 +22,8 @@ from app.core.amo_constants import (
     FIELD_UTM_CONTENT,
     FIELD_UTM_TERM,
     ENUM_DEPT_OFFLINE,
+    STATUS_WON,   # 142 «Успешно реализовано»
+    STATUS_LOST,  # 143 «Закрыто и не реализовано»
 )
 from app.models.call import Call
 
@@ -84,6 +87,20 @@ _SOURCE_TO_CITY = {
 
 # Окно поиска свежего лида — 5 минут в секундах
 _RECENT_LEAD_WINDOW_SECONDS = 300
+
+# Закрытые (терминальные) системные статусы AMO: 142 «Успешно», 143 «Закрыто и не реализовано».
+# Эти id зарезервированы AMO и ОДИНАКОВЫ во всех воронках, поэтому проверка
+# status_id ∉ _CLOSED_STATUS_IDS корректно отличает открытый лид в любой воронке.
+_CLOSED_STATUS_IDS = {STATUS_WON, STATUS_LOST}  # {142, 143}
+
+# Тип задачи AMO: 1 = «Связаться» (встроенный дефолтный тип «перезвонить», есть в каждом аккаунте).
+_TASK_TYPE_CONTACT = 1
+
+# Дедлайн задачи «перезвоните» — через 1 час после звонка (unix-ts = now + это значение).
+_TASK_DEADLINE_SECONDS = 3600
+
+# Сколько лидов тянуть при поиске открытого лида по номеру (без временного окна).
+_OPEN_LEAD_SEARCH_LIMIT = 50
 
 # Round-robin города для лидов где город неизвестен (instagram/site/fb/tiktok).
 # Присваиваем по кругу чтобы Salesbot AMO распределял их по менеджерам всех городов.
@@ -273,6 +290,149 @@ class AmoCRMClient:
 
         return (None, False)
 
+    async def _find_open_lead_by_caller(
+        self,
+        client: httpx.AsyncClient,
+        caller: str,
+    ) -> dict | None:
+        """Ищет ЛЮБОЙ открытый лид (status_id ∉ {142,143}, любая воронка) по номеру caller.
+
+        Возвращает dict самого свежего открытого лида (нужны ключи 'id' и 'responsible_user_id'),
+        либо None если открытых лидов нет / ошибка.
+        НЕ бросает исключений (fail-open): любая ошибка/таймаут/невалидный JSON/401/403 → None,
+        чтобы не подавить создание нового лида и не потерять заявку.
+        """
+        phone = normalize_phone(caller)
+        if not phone:
+            return None
+
+        try:
+            resp = await client.get(
+                f"{self._base_url()}/api/v4/leads",
+                params={"query": phone, "limit": _OPEN_LEAD_SEARCH_LIMIT},
+                headers=self._headers(),
+            )
+        except httpx.TimeoutException:
+            logger.warning(
+                "AMO: таймаут при поиске открытого лида caller=%s — fail-open",
+                caller,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "AMO: ошибка при поиске открытого лида caller=%s — fail-open",
+                caller,
+            )
+            return None
+
+        if resp.status_code in (401, 403):
+            logger.warning(
+                "AMO: 401/403 при поиске открытого лида caller=%s — fail-open", caller
+            )
+            return None
+
+        if resp.status_code != 200:
+            # 204 и прочее — считаем что открытого лида нет.
+            logger.warning(
+                "AMO: неожиданный статус %s при поиске открытого лида caller=%s",
+                resp.status_code, caller,
+            )
+            return None
+
+        if not resp.content:
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning(
+                "AMO: невалидный JSON при поиске открытого лида caller=%s", caller
+            )
+            return None
+
+        # AMO на HTTP 200 обязан вернуть объект, но защищаемся от аномалий формата
+        # (список/строка/null/{"_embedded": null}) — не бросаем AttributeError, fail-open.
+        if not isinstance(data, dict):
+            logger.warning(
+                "AMO: неожиданный формат ответа (не объект) при поиске открытого лида caller=%s",
+                caller,
+            )
+            return None
+
+        embedded = data.get("_embedded") or {}
+        if not isinstance(embedded, dict):
+            logger.warning(
+                "AMO: неожиданный формат '_embedded' при поиске открытого лида caller=%s",
+                caller,
+            )
+            return None
+        leads = embedded.get("leads") or []
+        if not isinstance(leads, list):
+            logger.warning(
+                "AMO: неожиданный формат '_embedded.leads' при поиске открытого лида caller=%s",
+                caller,
+            )
+            return None
+        if not leads:
+            return None
+
+        open_leads = [lead for lead in leads if lead.get("status_id") not in _CLOSED_STATUS_IDS]
+        if not open_leads:
+            return None
+
+        # Самый свежий открытый лид: по updated_at, fallback created_at, затем 0.
+        return max(open_leads, key=lambda lead: lead.get("updated_at") or lead.get("created_at") or 0)
+
+    async def _create_followup_task(
+        self,
+        client: httpx.AsyncClient,
+        lead_id: int,
+        responsible_user_id: int | None,
+        call: Call,
+        caller: str,
+    ) -> bool:
+        """Ставит задачу 'перезвоните' ответственному менеджеру открытого лида.
+
+        POST /api/v4/tasks. Возвращает True при успехе, False при ошибке.
+        НЕ бросает: ошибка постановки задачи не должна ломать привязку call к лиду.
+        """
+        city = _SOURCE_TO_CITY.get(call.source) or _city_from_campaign(call.campaign)
+        source_str = call.source or "неизвестный источник"
+        suffix = f", {city}" if city else ""
+        text = (
+            f"Клиент снова обратился — входящий звонок с рекламы ({source_str}{suffix}). "
+            f"Перезвоните. Тел: {caller}"
+        )
+
+        task: dict = {
+            "task_type_id": _TASK_TYPE_CONTACT,
+            "text": text,
+            "complete_till": int(time.time()) + _TASK_DEADLINE_SECONDS,
+            "entity_id": lead_id,
+            "entity_type": "leads",
+        }
+        resp_user = responsible_user_id if responsible_user_id is not None else settings.amo_responsible_user_id
+        if resp_user is not None:
+            task["responsible_user_id"] = resp_user
+
+        try:
+            resp = await client.post(
+                f"{self._base_url()}/api/v4/tasks",
+                json=[task],
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            logger.info(
+                "AMO: задача 'перезвоните' поставлена на лид id=%s (менеджер=%s) caller=%s",
+                lead_id, resp_user, caller,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "AMO: не удалось поставить задачу на лид id=%s caller=%s", lead_id, caller
+            )
+            return False
+
     async def create_lead_from_call(self, call: Call, caller: str) -> int | None:
         """Создаёт или обновляет лид в AMO CRM по данным входящего звонка.
 
@@ -339,6 +499,23 @@ class AmoCRMClient:
                         existing_id, caller,
                     )
                     return existing_id
+
+                # --- НОВОЕ: открытый лид у этого номера (тот же человек, другой звонок) ---
+                # Свежего мультилег-лида нет. Проверяем, нет ли у номера УЖЕ открытого лида
+                # (в любой воронке, status_id ∉ {142,143}). Если есть — НЕ плодим дубль:
+                # возвращаем его id (вызывающий _push_to_amo сам добавит call-note и проставит
+                # call.amo_lead_id) и ставим задачу ответственному менеджеру «перезвоните».
+                open_lead = await self._find_open_lead_by_caller(client, caller)
+                if open_lead:
+                    open_id = open_lead["id"]
+                    responsible = open_lead.get("responsible_user_id")
+                    await self._create_followup_task(client, open_id, responsible, call, caller)
+                    logger.info(
+                        "AMO CRM: у caller=%s есть открытый лид id=%s — дубль подавлён, "
+                        "поставлена задача менеджеру (uniqueid=%s)",
+                        caller, open_id, call.uniqueid,
+                    )
+                    return open_id
 
                 # Ничего не нашли — создаём новый лид через /leads/complex.
                 # Если город неизвестен (instagram/site/fb/tiktok) — присваиваем по кругу
