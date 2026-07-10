@@ -40,6 +40,25 @@ async def _reload_our_dids() -> None:
         logger.exception("Не удалось загрузить наши DID из БД")
 
 
+# Интервал перечитывания кеша наших DID (сек). Свежедобавленный активный
+# номер становится «захватываемым» без ожидания реконнекта AMI. Пишем в кеш
+# только валидные DID (is_our_did), поэтому редкий незакешированный DID лучше
+# пропустить на ≤ этот интервал, чем один раз записать мусор оператора.
+_DID_REFRESH_INTERVAL_SEC = 300
+
+
+async def run_did_refresh_loop() -> None:
+    """Фоновый цикл: раз в _DID_REFRESH_INTERVAL_SEC перечитывает кеш _our_dids."""
+    while True:
+        try:
+            await asyncio.sleep(_DID_REFRESH_INTERVAL_SEC)
+            await _reload_our_dids()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("run_did_refresh_loop: ошибка цикла обновления DID-кеша")
+
+
 class AMIClient:
     def __init__(self):
         self._manager: Manager | None = None
@@ -155,21 +174,22 @@ class AMIClient:
         did_norm = normalize_phone(exten) if exten and not exten.startswith(("s", "h", "i")) else ""
         is_our_did = bool(did_norm and did_norm in _our_dids)
 
-        # Старый эвристический триггер оставляем как fallback — вдруг наш DID
-        # ещё не в кеше (добавили после старта), но канал явно из транка.
-        is_inbound_trunk = (
-            context in ("from-trunk", "from-pstn")
-            or channel.startswith("SIP/trunk_")
-            or channel.startswith("PJSIP/trunk_")
-            or channel.startswith("Local/trunk_")
-        )
-
-        if (is_our_did or is_inbound_trunk) and did_norm:
+        # Захватываем inbound_did ТОЛЬКО когда Exten — реально наш активный DID.
+        # НИКОГДА не по одному лишь признаку транка: с 8 июля оператор 77072374305
+        # перестроил транзит и кладёт свой (или чужой) номер в Exten на from-trunk
+        # каналах — жадный is_inbound_trunk отравлял ключ inbound_did мусором.
+        # Цена: редкий валидный, но ещё не закешированный DID пропустим (кеш
+        # обновляется каждые 5 мин и на реконнекте) — записать мусор хуже.
+        if is_our_did:
             try:
-                # Сохраняем DID по uniqueid и linkedid (TTL 5 минут)
+                # inbound_did:{uniqueid} — uniqueid уникален на канал, простой SET.
                 await redis_client.set(f"inbound_did:{uniqueid}", did_norm, ex=7200)
+                # inbound_did:{linkedid} — общий ключ всех ног звонка. nx=True:
+                # первый валидный наш DID НЕ перезатирается последующими ногами.
                 if linkedid and linkedid != uniqueid:
-                    await redis_client.set(f"inbound_did:{linkedid}", did_norm, ex=7200)
+                    await redis_client.set(
+                        f"inbound_did:{linkedid}", did_norm, ex=7200, nx=True
+                    )
                 logger.info(
                     "inbound DID captured: uniqueid=%s linkedid=%s did=%s channel=%s",
                     uniqueid, linkedid, did_norm, channel,

@@ -175,6 +175,24 @@ async def _resolve_did(
     return redis_did or user_field or dst
 
 
+def _should_upgrade_foreign_row(existing: "Call", resolved_project_id: str | None) -> bool:
+    """Надо ли «добить» существующую строку нашей атрибуцией.
+
+    True только если:
+      - мы сами что-то разрезолвили (resolved_project_id — наш DID нашёлся), И
+      - существующая строка НЕ атрибуцирована (создана «чужим» писателем —
+        старым api-контейнером: project_id=NULL и linkedid=NULL).
+
+    Наши собственные строки всегда имеют linkedid (пишем из payload), поэтому
+    под этот guard не попадают → повторного UPDATE/лида не будет (идемпотентность).
+    """
+    return (
+        resolved_project_id is not None
+        and existing.project_id is None
+        and existing.linkedid is None
+    )
+
+
 async def _apply_source_attribution(db, call: Call, session_data: dict | None, did_norm: str | None) -> None:
     """Атрибутирует источник звонка — мутирует поля call.source/medium/campaign/keyword.
 
@@ -563,12 +581,40 @@ async def _handle_cdr(event: dict):
                     uniqueid, user_field, dst, src,
                 )
 
-            # Проверяем дубликат по uniqueid перед INSERT
-            # AMI может прислать CDR дважды (после переподключения worker-а)
+            # Существующая запись по uniqueid? AMI может прислать CDR дважды
+            # (реконнект/replay), И на проде звонок мог создать «чужой» писатель
+            # (старый api-контейнер: tracking_did=dst, linkedid=NULL, project_id=NULL,
+            # лида не создаёт). Если существующая строка не атрибутирована, а у нас
+            # есть атрибуция (project_id) — ДОБИВАЕМ её и создаём лид вместо скипа.
             existing_call_row = await db.execute(
                 select(Call).where(Call.uniqueid == call.uniqueid)
             )
-            if existing_call_row.scalar_one_or_none() is not None:
+            existing_call = existing_call_row.scalar_one_or_none()
+            if existing_call is not None:
+                if _should_upgrade_foreign_row(existing_call, project_id):
+                    existing_call.tracking_did = call.tracking_did
+                    existing_call.linkedid = call.linkedid
+                    existing_call.project_id = call.project_id
+                    existing_call.source = call.source
+                    existing_call.medium = call.medium
+                    existing_call.campaign = call.campaign
+                    existing_call.keyword = call.keyword
+                    existing_call.is_unique = call.is_unique
+                    existing_call.is_target = call.is_target
+                    if call.recording_url:
+                        existing_call.recording_url = call.recording_url
+                    # UPDATE, не INSERT — IntegrityError по uniqueid тут не возникнет.
+                    # Транзиентный сбой commit() пробросится наружу и будет пойман
+                    # общим except ниже (как и остальные ошибки этого блока) —
+                    # сессия закроется (async with) с неявным rollback, не падаем.
+                    await db.commit()
+                    logger.info(
+                        "CDR upgraded foreign row: uniqueid=%s did=%s project=%s",
+                        uniqueid, did_norm, project_id,
+                    )
+                    # Обычный путь атрибуции: создаём/переиспользуем лид.
+                    await _push_to_amo(db, existing_call, src, uniqueid)
+                    return
                 logger.info("CDR duplicate skipped: uniqueid=%s", uniqueid)
                 return
 

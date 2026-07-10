@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import tracking, calls, projects, numbers, callback, auth, health as health_router
 from app.api.v1 import amo_webhook
 from app.core.config import settings
-from app.services.ami_client import ami_client
+from app.services.ami_client import ami_client, run_did_refresh_loop
 from app.services.webhook import webhook_sender
 from app.services.pool_sync import sync_pool_from_db
 from app.services import ami_journal
@@ -56,6 +56,10 @@ async def lifespan(app: FastAPI):
     # Запуск ретеншна журнала AMI-событий: чистит done-события старше 7 дней раз в час
     journal_cleanup_task = asyncio.create_task(ami_journal.run_journal_cleanup_loop())
 
+    # Периодическое обновление кеша наших DID (новый активный номер станет
+    # захватываемым без ожидания реконнекта AMI).
+    did_refresh_task = asyncio.create_task(run_did_refresh_loop())
+
     yield
 
     # Shutdown: останавливаем reconnect-цикл и закрываем соединения
@@ -63,6 +67,7 @@ async def lifespan(app: FastAPI):
     reconciliation_task.cancel()
     amo_poll_task.cancel()
     journal_cleanup_task.cancel()
+    did_refresh_task.cancel()
     await ami_client.disconnect()
     await webhook_sender.close()
 
